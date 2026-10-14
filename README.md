@@ -58,7 +58,7 @@ ProxiSpeak is being developed by a team of four members, with each member respon
 - Maintain the frontend representation of connected players.
 - Integrate movement controls with the backend's real-time events.
 
-**3. Janakirani Venkatesan — WebRTC Research & Testing**
+**3. Janakirani V — WebRTC Research & Testing**
 - Research WebRTC architecture and browser support.
 - Prepare the technical foundation for future voice communication.
 - Investigate the requirements for real-time audio connections.
