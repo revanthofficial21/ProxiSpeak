@@ -37,7 +37,7 @@ ProxiSpeak is being developed by a team of four members, with each member respon
 |---|---|---|
 | **Revanth (Project Lead)** | Backend Developer & Integration | Build the working server, implement Socket.IO communication, broadcast avatar positions in real time, and integrate frontend and backend modules. |
 | **Vivek** | Frontend Developer | Develop the virtual office using React and Canvas, implement avatar rendering, and build smooth avatar movement controls. |
-| **Janakirani Venkatesan** | WebRTC Research & Testing | Research WebRTC, prepare the foundation for voice communication, and conduct browser testing without delaying movement development. |
+| **Janakirani V** | WebRTC Research & Testing | Research WebRTC, prepare the foundation for voice communication, and conduct browser testing without delaying movement development. |
 | **Naseema** | Database Developer | Design the MongoDB data model for virtual-world positions and prepare the position-data storage approach. |
 
 ### Individual Responsibilities
@@ -58,7 +58,7 @@ ProxiSpeak is being developed by a team of four members, with each member respon
 - Maintain the frontend representation of connected players.
 - Integrate movement controls with the backend's real-time events.
 
-**3. Janakirani Venkatesan — WebRTC Research & Testing**
+**3. Janakirani V — WebRTC Research & Testing**
 - Research WebRTC architecture and browser support.
 - Prepare the technical foundation for future voice communication.
 - Investigate the requirements for real-time audio connections.
