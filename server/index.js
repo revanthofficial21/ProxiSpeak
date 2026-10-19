@@ -13,7 +13,7 @@ app.use(express.json());
 
 const io = new Server(httpServer, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: ["http://localhost:5173", "http://localhost:5174"],
     methods: ["GET", "POST"],
   },
 });
@@ -23,6 +23,43 @@ const players = new Map();
 
 const WORLD_WIDTH = 1000;
 const WORLD_HEIGHT = 600;
+const PLAYER_RADIUS = 20;
+const SPAWN_SPACINGS = [80, 60, 40];
+const SPAWN_MARGIN = PLAYER_RADIUS + 20;
+const spawnSlots = new Map();
+
+function allocateSpawnPosition() {
+  const occupiedPositions = Array.from(spawnSlots.values());
+  const minimumSpacing = PLAYER_RADIUS * 2 + 8;
+
+  for (const spacing of SPAWN_SPACINGS) {
+    const columns = Math.floor((WORLD_WIDTH - SPAWN_MARGIN * 2) / spacing) + 1;
+    const rows = Math.floor((WORLD_HEIGHT - SPAWN_MARGIN * 2) / spacing) + 1;
+
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        const position = {
+          x: SPAWN_MARGIN + column * spacing,
+          y: SPAWN_MARGIN + row * spacing,
+        };
+        const isAvailable = occupiedPositions.every(
+          (occupied) =>
+            Math.hypot(position.x - occupied.x, position.y - occupied.y) >=
+            minimumSpacing
+        );
+
+        if (isAvailable) return position;
+      }
+    }
+  }
+
+  return {
+    x: SPAWN_MARGIN + (spawnSlots.size % (WORLD_WIDTH - SPAWN_MARGIN * 2)),
+    y: SPAWN_MARGIN +
+      (Math.floor(spawnSlots.size / (WORLD_WIDTH - SPAWN_MARGIN * 2)) %
+        (WORLD_HEIGHT - SPAWN_MARGIN * 2)),
+  };
+}
 
 app.get("/", (req, res) => {
   res.json({
@@ -34,10 +71,11 @@ app.get("/", (req, res) => {
 io.on("connection", (socket) => {
   console.log(`Player connected: ${socket.id}`);
 
+  const spawnPosition = allocateSpawnPosition();
+  spawnSlots.set(socket.id, spawnPosition);
   const player = {
     id: socket.id,
-    x: 100,
-    y: 100,
+    ...spawnPosition,
   };
 
   players.set(socket.id, player);
@@ -60,8 +98,8 @@ io.on("connection", (socket) => {
 
     const updatedPlayer = {
       id: socket.id,
-      x: Math.max(0, Math.min(WORLD_WIDTH, position.x)),
-      y: Math.max(0, Math.min(WORLD_HEIGHT, position.y)),
+      x: Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, position.x)),
+      y: Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, position.y)),
     };
 
     players.set(socket.id, updatedPlayer);
@@ -72,6 +110,7 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     players.delete(socket.id);
+    spawnSlots.delete(socket.id);
     io.emit("player:left", socket.id);
     console.log(`Player disconnected: ${socket.id}`);
   });

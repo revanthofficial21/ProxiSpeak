@@ -5,8 +5,8 @@ import "./App.css";
 
 const WORLD_WIDTH = 1000;
 const WORLD_HEIGHT = 600;
-const SERVER_URL = "http://localhost:3000";
-const SPEED = 4;
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || "http://localhost:3000";
+const SPEED = 240;
 const AVATAR_RADIUS = 20;
 
 const obstacles = [
@@ -74,8 +74,10 @@ function hitsObstacle(x, y) {
 
 export default function App() {
   const canvasRef = useRef(null);
+  const canvasWrapRef = useRef(null);
   const socketRef = useRef(null);
   const keysRef = useRef({});
+  const gameFocusedRef = useRef(false);
   const playersRef = useRef(new Map());
 
   const [connected, setConnected] = useState(false);
@@ -90,7 +92,10 @@ export default function App() {
     const socket = io(SERVER_URL);
     socketRef.current = socket;
 
-    socket.on("connect", () => setConnected(true));
+    socket.on("connect", () => {
+      setConnected(true);
+      updatePlayerCount();
+    });
     socket.on("disconnect", () => setConnected(false));
 
     socket.on("world:state", (players) => {
@@ -106,6 +111,7 @@ export default function App() {
     });
 
     socket.on("player:moved", (player) => {
+      if (player.id === socket.id) return;
       playersRef.current.set(player.id, player);
       updatePlayerCount();
     });
@@ -124,44 +130,64 @@ export default function App() {
   // Keyboard movement and Canvas rendering
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const canvasWrap = canvasWrapRef.current;
+    if (!canvas || !canvasWrap) return;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
     let animationId;
     let lastSent = 0;
+    let previousFrame = performance.now();
 
     const handleKeyDown = (event) => {
       const key = event.key.toLowerCase();
-
+      if (!gameFocusedRef.current) return;
       if (
-        ["arrowup", "arrowdown", "arrowleft", "arrowright", " "].includes(key)
+        !["arrowup", "arrowdown", "arrowleft", "arrowright", "w", "a", "s", "d"].includes(
+          key
+        )
       ) {
+        return;
+      }
+      if (key.startsWith("arrow")) {
         event.preventDefault();
       }
-
       keysRef.current[key] = true;
+    };
+
+    const clearKeys = () => {
+      keysRef.current = {};
     };
 
     const handleKeyUp = (event) => {
       keysRef.current[event.key.toLowerCase()] = false;
     };
 
+    const handleFocus = () => {
+      gameFocusedRef.current = true;
+    };
     const handleBlur = () => {
-      keysRef.current = {};
+      gameFocusedRef.current = false;
+      clearKeys();
     };
 
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
-    window.addEventListener("blur", handleBlur);
+    window.addEventListener("keydown", handleKeyDown, true);
+    window.addEventListener("keyup", handleKeyUp, true);
+    canvasWrap.addEventListener("focus", handleFocus);
+    canvasWrap.addEventListener("blur", handleBlur);
+    window.addEventListener("blur", clearKeys);
 
-    function draw() {
+    function draw(timestamp) {
       const socket = socketRef.current;
       const me = socket?.id;
       const players = playersRef.current;
       const current = me ? players.get(me) : null;
       const keys = keysRef.current;
+      const deltaTime = previousFrame
+        ? Math.min((timestamp - previousFrame) / 1000, 0.05)
+        : 0;
+      previousFrame = timestamp;
 
       // Move the local player and check furniture collisions
       if (current && socket?.connected) {
@@ -175,8 +201,9 @@ export default function App() {
 
         if (dx !== 0 || dy !== 0) {
           const length = Math.hypot(dx, dy);
-          const stepX = (dx / length) * SPEED;
-          const stepY = (dy / length) * SPEED;
+          const distance = SPEED * deltaTime;
+          const stepX = (dx / length) * distance;
+          const stepY = (dy / length) * distance;
 
           const nextX = Math.max(
             AVATAR_RADIUS,
@@ -198,14 +225,13 @@ export default function App() {
             current.y = nextY;
           }
 
-          // Send updated coordinates to the existing backend
-          if (performance.now() - lastSent > 40) {
+          if (timestamp - lastSent > 40 && socket?.connected) {
             socket.emit("player:move", {
               x: current.x,
               y: current.y,
             });
 
-            lastSent = performance.now();
+            lastSent = timestamp;
           }
         }
       }
@@ -269,11 +295,13 @@ export default function App() {
 
     return () => {
       cancelAnimationFrame(animationId);
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
-      window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("keydown", handleKeyDown, true);
+      window.removeEventListener("keyup", handleKeyUp, true);
+      canvasWrap.removeEventListener("focus", handleFocus);
+      canvasWrap.removeEventListener("blur", handleBlur);
+      window.removeEventListener("blur", clearKeys);
     };
-  }, []);
+  }, [updatePlayerCount]);
 
   return (
     <main className="app">
@@ -320,9 +348,11 @@ export default function App() {
         </div>
 
         <div
+          ref={canvasWrapRef}
           className="canvas-wrap"
           tabIndex={0}
-          aria-label="Game world. Use WASD or arrow keys to move."
+          aria-label="Game world. Click here, then use WASD or arrow keys to move."
+          onClick={() => canvasWrapRef.current?.focus()}
         >
           <canvas
             ref={canvasRef}

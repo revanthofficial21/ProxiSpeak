@@ -208,6 +208,11 @@ input {
   outline: none;
 }
 
+.canvas-wrap:focus-visible {
+  outline: 2px solid #6ee7b7;
+  outline-offset: -2px;
+}
+
 .world-canvas {
   display: block;
   width: 100%;
