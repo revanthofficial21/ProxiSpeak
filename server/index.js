@@ -3,23 +3,28 @@ const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
-const { connectDB, getDB } = require("./db");
 require("dotenv").config();
+const { MongoClient } = require("mongodb");
 
 const app = express();
 const httpServer = http.createServer(app);
+
+const mongoClient = new MongoClient(process.env.MONGODB_URI, {
+  serverSelectionTimeoutMS: 10000,
+});
+
+let db;
 
 app.use(cors());
 app.use(express.json());
 
 const io = new Server(httpServer, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: ["http://localhost:5173", "http://localhost:5174"],
     methods: ["GET", "POST"],
   },
 });
 
-// Store currently connected players in memory for fast access.
 const players = new Map();
 
 const WORLD_WIDTH = 1000;
@@ -37,31 +42,113 @@ io.on("connection", (socket) => {
 
   const player = {
     id: socket.id,
+    socketId: socket.id,
+    name: "",
     x: 100,
     y: 100,
   };
 
   players.set(socket.id, player);
 
-  // Save the newly connected player in MongoDB.
-  getDB()
-    .collection("players")
-    .insertOne({
-      ...player,
-      joinedAt: new Date(),
-      updatedAt: new Date(),
-    })
+  // Save initial player data in MongoDB.
+  db.collection("players")
+    .updateOne(
+      { socketId: socket.id },
+      {
+        $set: {
+          socketId: socket.id,
+          name: player.name,
+          x: player.x,
+          y: player.y,
+          connected: true,
+          updatedAt: new Date(),
+        },
+        $setOnInsert: {
+          createdAt: new Date(),
+        },
+      },
+      { upsert: true }
+    )
     .catch((error) => {
-      console.error("Failed to save new player:", error.message);
+      console.error("Failed to save player:", error.message);
     });
 
-  // Send the current player list to the newly connected client.
   socket.emit("world:state", Array.from(players.values()));
-
-  // Notify other connected clients.
   socket.broadcast.emit("player:joined", player);
 
-  // Handle player movement.
+  // Save the player's name.
+  socket.on("player:setName", async (name, callback) => {
+    console.log("Received player name:", name);
+
+    if (typeof name !== "string" || !name.trim()) {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "Invalid player name" });
+      }
+      return;
+    }
+
+    const currentPlayer = players.get(socket.id);
+
+    if (!currentPlayer) {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "Player not found" });
+      }
+      return;
+    }
+
+    currentPlayer.name = name.trim().slice(0, 30);
+
+    try {
+      const result = await db.collection("players").updateOne(
+        { socketId: socket.id },
+        {
+          $set: {
+            name: currentPlayer.name,
+            updatedAt: new Date(),
+            connected: true,
+          },
+        }
+      );
+
+      console.log("Player name:", currentPlayer.name);
+      console.log("MongoDB matched:", result.matchedCount);
+      console.log("MongoDB modified:", result.modifiedCount);
+
+      if (result.matchedCount === 0) {
+        console.error("No MongoDB record matched this socket ID.");
+
+        if (typeof callback === "function") {
+          callback({
+            success: false,
+            error: "Player record not found in MongoDB",
+          });
+        }
+        return;
+      }
+
+      players.set(socket.id, currentPlayer);
+
+      io.emit("player:renamed", currentPlayer);
+
+      if (typeof callback === "function") {
+        callback({
+          success: true,
+          name: currentPlayer.name,
+        });
+      }
+    } catch (error) {
+      console.error("Failed to save player name:", error.message);
+
+      if (typeof callback === "function") {
+        callback({
+          success: false,
+          error: error.message,
+        });
+      }
+    }
+  });
+
+  // Update player position.
   socket.on("player:move", (position) => {
     if (
       !position ||
@@ -71,52 +158,56 @@ io.on("connection", (socket) => {
       return;
     }
 
+    const currentPlayer = players.get(socket.id);
+    if (!currentPlayer) return;
+
     const updatedPlayer = {
-      id: socket.id,
+      ...currentPlayer,
       x: Math.max(0, Math.min(WORLD_WIDTH, position.x)),
       y: Math.max(0, Math.min(WORLD_HEIGHT, position.y)),
     };
 
     players.set(socket.id, updatedPlayer);
 
-    // Broadcast movement immediately to all connected clients.
-    io.emit("player:moved", updatedPlayer);
-
-    // Persist the latest coordinates in MongoDB.
-    getDB()
-      .collection("players")
+    db.collection("players")
       .updateOne(
-        { id: socket.id },
+        { socketId: socket.id },
         {
           $set: {
+            name: updatedPlayer.name,
             x: updatedPlayer.x,
             y: updatedPlayer.y,
+            connected: true,
             updatedAt: new Date(),
           },
         }
       )
       .catch((error) => {
-        console.error(
-          "Failed to update player position:",
-          error.message
-        );
+        console.error("Failed to update player position:", error.message);
       });
+
+    io.emit("player:moved", updatedPlayer);
   });
 
-  // Remove the player when they disconnect.
+  // Handle player disconnection.
   socket.on("disconnect", () => {
     players.delete(socket.id);
-    io.emit("player:left", socket.id);
 
-    getDB()
-      .collection("players")
-      .deleteOne({ id: socket.id })
+    db.collection("players")
+      .updateOne(
+        { socketId: socket.id },
+        {
+          $set: {
+            connected: false,
+            updatedAt: new Date(),
+          },
+        }
+      )
       .catch((error) => {
-        console.error(
-          "Failed to remove disconnected player:",
-          error.message
-        );
+        console.error("Failed to update player status:", error.message);
       });
+
+    io.emit("player:left", socket.id);
 
     console.log(`Player disconnected: ${socket.id}`);
   });
@@ -126,16 +217,18 @@ const PORT = process.env.PORT || 3000;
 
 async function startServer() {
   try {
-    await connectDB();
+    await mongoClient.connect();
+
+    db = mongoClient.db("proxispeak");
+
+    console.log("MongoDB connected successfully!");
 
     httpServer.listen(PORT, () => {
-      console.log(
-        `ProxiSpeak server running at http://localhost:${PORT}`
-      );
+      console.log(`ProxiSpeak server running at http://localhost:${PORT}`);
     });
   } catch (error) {
-    console.error("Failed to start server:", error.message);
-    process.exit(1);
+    console.error("Server startup failed:", error.message);
+    process.exitCode = 1;
   }
 }
 
