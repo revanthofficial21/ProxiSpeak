@@ -37,7 +37,7 @@ ProxiSpeak is being developed by a team of four members, with each member respon
 |---|---|---|
 | **Revanth (Project Lead)** | Backend Developer & Integration | Build the working server, implement Socket.IO communication, broadcast avatar positions in real time, and integrate frontend and backend modules. |
 | **Vivek** | Frontend Developer | Develop the virtual office using React and Canvas, implement avatar rendering, and build smooth avatar movement controls. |
-| **Janakirani V** | WebRTC Research & Testing | Research WebRTC, prepare the foundation for voice communication, and conduct browser testing without delaying movement development. |
+| **Janakirani Venkatesan** | WebRTC Research & Testing | Research WebRTC, prepare the foundation for voice communication, and conduct browser testing without delaying movement development. |
 | **Naseema** | Database Developer | Design the MongoDB data model for virtual-world positions and prepare the position-data storage approach. |
 
 ### Individual Responsibilities
@@ -58,7 +58,7 @@ ProxiSpeak is being developed by a team of four members, with each member respon
 - Maintain the frontend representation of connected players.
 - Integrate movement controls with the backend's real-time events.
 
-**3. Janakirani V — WebRTC Research & Testing**
+**3. Janakirani Venkatesan — WebRTC Research & Testing**
 - Research WebRTC architecture and browser support.
 - Prepare the technical foundation for future voice communication.
 - Investigate the requirements for real-time audio connections.
@@ -250,172 +250,28 @@ ProxiSpeak/
 - Started the frontend and backend using separate development terminals.
 - Investigated and resolved the initial backend connection-refused issue by getting the backend service running.
 
-## 9. Real-Time Event Workflow
-
-The following events form the initial communication contract between the frontend and backend.
-
+### Real-Time Communication Events
 | Event | Purpose |
 |---|---|
-| `connection` | Handles a new Socket.IO client connection |
-| `world:state` | Sends the current collection of players to a newly connected client |
-| `player:joined` | Announces a newly connected player to other clients |
-| `player:move` | Sends a player's updated X/Y coordinates to the server |
-| `player:moved` | Broadcasts the validated player position to connected clients |
-| `player:left` | Announces a player's disconnection |
-| `disconnect` | Triggers server-side player cleanup |
+| `world:state` | Sends the current world state to a newly connected player |
+| `player:joined` | Notifies other users when a player joins |
+| `player:move` | Receives avatar movement updates from a client |
+| `player:moved` | Broadcasts updated avatar coordinates |
+| `player:left` | Notifies other users when a player disconnects |
 
-### Movement workflow
+### Backend Integration
+- Integrated Express.js with an HTTP server and Socket.IO.
+- Configured Cross-Origin Resource Sharing (CORS) for local frontend connectivity.
+- Connected the backend to the existing MongoDB database module for player-position persistence.
+- Configured environment variables for backend settings and database connectivity.
+- Tested the backend and pushed the completed changes to my GitHub branch.
 
-1. A user opens the ProxiSpeak frontend.
-2. The frontend establishes a Socket.IO connection with the backend.
-3. The backend creates a player record with an initial position.
-4. The client receives the current world state.
-5. The user moves the avatar using the keyboard.
-6. The frontend sends the updated coordinates through `player:move`.
-7. The backend validates and constrains the coordinates.
-8. The backend updates the player's in-memory state.
-9. The backend broadcasts the updated position using `player:moved`.
-10. Connected clients process the event and update their rendered world.
+### Project Leadership
+- Coordinated backend integration with the frontend and database workstreams.
+- Supported team collaboration through Git branches and GitHub.
+- Focused on maintaining a working real-time movement system for subsequent feature integration.
 
-### Player disconnection workflow
+### Current Deliverable
+A working backend that supports player connections, avatar-coordinate updates, real-time position broadcasting, and player disconnection handling.
 
-1. A browser client disconnects.
-2. The backend removes that player's entry from the in-memory map.
-3. The backend broadcasts `player:left`.
-4. Other clients can remove the disconnected player from their local state.
-
-## 10. Running the Project Locally
-
-### Prerequisites
-
-- Node.js and npm
-- Git
-- Visual Studio Code
-- A modern web browser
-
-### Step 1 — Clone the repository
-
-```bash
-git clone https://github.com/revanthofficial21/ProxiSpeak.git
-cd ProxiSpeak
-```
-
-### Step 2 — Start the backend
-
-```bash
-cd server
-npm install
-npm run dev
-```
-
-The backend listens on port `3000` by default.
-
-Expected terminal message:
-
-```text
-ProxiSpeak server running at http://localhost:3000
-```
-
-### Step 3 — Start the frontend
-
-Open a second terminal from the project root:
-
-```bash
-cd client
-npm install
-npm install socket.io-client
-npm run dev
-```
-
-The Vite development server normally runs at:
-
-```text
-http://localhost:5173
-```
-
-### Step 4 — Verify the backend
-
-Open the following URL:
-
-`http://localhost:3000`
-
-The server returns a JSON response containing a status message and the current number of connected players.
-
-### Step 5 — Test the application
-
-- Open the frontend in a browser.
-- Open the same frontend in a second browser window.
-- Connect both clients to the running backend.
-- Test keyboard movement.
-- Observe player positions and connection updates.
-
-## 11. Development Workflow
-
-Our development workflow separates frontend and backend work while maintaining a shared communication contract.
-
-### Development sequence
-
-1. **Project setup:** Establish the repository and separate `client` and `server` applications.
-2. **Frontend development:** Build the React interface and canvas-based virtual world.
-3. **Backend development:** Configure Express, Socket.IO, and in-memory player state.
-4. **Event integration:** Align movement event names and coordinate payloads between both applications.
-5. **Local execution:** Run the frontend and backend in separate terminals.
-6. **Integration testing:** Check connection handling, movement events, and player presence.
-7. **Version control:** Work on the team's designated Git branches and push changes to GitHub.
-
-### Git branch workflow
-
-The current development branch used for this work is `revanth`.
-
-```bash
-git branch --show-current
-git status
-git add README.md
-git commit -m "docs: document ProxiSpeak implementation"
-git push origin revanth
-```
-
-This example commits the README only. Stage additional files separately when those changes are ready to be committed.
-
-## 12. Development Milestone
-
-**Week 1 — Virtual-world foundation and real-time movement**
-
-The initial milestone establishes the foundation required for the wider ProxiSpeak application.
-
-| Work area | Work performed |
-|---|---|
-| Frontend foundation | React and Vite setup |
-| World rendering | Canvas-based virtual-world interface |
-| Movement | Keyboard-driven avatar movement workflow |
-| Backend foundation | Express and HTTP server setup |
-| Real-time communication | Socket.IO integration |
-| Player state | In-memory connected-player tracking |
-| Movement events | Coordinate validation and broadcasting |
-| Client integration | Frontend connection to the backend |
-| Local testing | Backend health check and connection troubleshooting |
-| Repository documentation | README and project workflow documentation |
-
-## 13. Next Development Phase
-
-The next phase extends the foundation with persistent spatial data and proximity-aware communication.
-
-- Introduce MongoDB connection configuration and player schemas.
-- Define the spatial coordinate model and appropriate query strategy.
-- Implement and test proximity calculations.
-- Integrate WebRTC signaling and audio connections.
-- Develop distance-based audio attenuation and crossfading.
-- Improve multi-client testing and connection recovery.
-
-These items represent the planned next phase rather than the current movement-server implementation.
-
-## 14. Project Summary
-
-ProxiSpeak establishes a full-stack foundation for a spatial collaboration application. The current implementation work covers the React/Vite frontend, a Canvas-based virtual-world interface, an Express and Socket.IO backend, in-memory player tracking, coordinate validation, movement broadcasting, and frontend-backend integration.
-
-This foundation provides the basis for adding persistent spatial data and real-time proximity audio in subsequent development phases.
-
----
-
-**Project:** ProxiSpeak — Geospatial Proximity Audio Ecosystem  
-**Repository:** [revanthofficial21/ProxiSpeak](https://github.com/revanthofficial21/ProxiSpeak)   
+**Technologies:** Node.js · Express.js · Socket.IO · MongoDB · JavaScript · Git · GitHub
