@@ -4,6 +4,7 @@ const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
 const { connectDB, getDB } = require("./db");
+const { getNearbyPlayers } = require("./proximity");
 require("dotenv").config();
 
 const app = express();
@@ -81,6 +82,12 @@ io.on("connection", (socket) => {
 
     // Broadcast movement immediately to all connected clients.
     io.emit("player:moved", updatedPlayer);
+    const nearbyPlayers = getNearbyPlayers(
+  Array.from(players.values()),
+  updatedPlayer
+);
+
+socket.emit("player:nearby", nearbyPlayers);
 
     // Persist the latest coordinates in MongoDB.
     getDB()
