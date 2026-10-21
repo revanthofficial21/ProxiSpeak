@@ -77,37 +77,6 @@ app.get("/", (req, res) => {
   });
 });
 
-// Ensure the geospatial index that $near relies on exists.
-async function ensureProximityIndex() {
-  const collection = getDB().collection("players");
-  const indexes = await collection.listIndexes().toArray();
-  const existing = indexes.find((index) => index.key && index.key.location);
-
-  // A 2d index measures planar (pixel) distance — the right fit for our
-  // flat 1000x600 world. Drop any non-2d index left over from a previous run.
-  if (existing && existing.key.location !== "2d") {
-    await collection.dropIndex(existing.name);
-  }
-
-  await collection.createIndex({ location: "2d" });
-  console.log("Proximity 2d geospatial index ready");
-}
-
-// Group users by proximity with a MongoDB $near query.
-async function findNearbyPlayers(player) {
-  return getDB()
-    .collection("players")
-    .find({
-      id: { $ne: player.id },
-      location: {
-        $near: [player.x, player.y],
-        $maxDistance: PROXIMITY_RADIUS,
-      },
-    })
-    .project({ _id: 0, id: 1, x: 1, y: 1 })
-    .toArray();
-}
-
 io.on("connection", (socket) => {
   console.log(`Player connected: ${socket.id}`);
 
@@ -123,15 +92,6 @@ io.on("connection", (socket) => {
 
   players.set(socket.id, player);
 
-  // Save the newly connected player in MongoDB, with a geospatial location.
-  getDB()
-    .collection("players")
-    .insertOne({
-      ...player,
-      location: [player.x, player.y],
-      joinedAt: new Date(),
-      updatedAt: new Date(),
-    })
   // Save the player's initial position.
   db.collection("players")
     .updateOne(
@@ -159,7 +119,6 @@ io.on("connection", (socket) => {
   socket.emit("world:state", Array.from(players.values()));
   socket.broadcast.emit("player:joined", player);
 
-  // Handle player movement.
   // Save the player's name.
   socket.on("player:setName", async (name, callback) => {
     if (typeof name !== "string" || !name.trim()) {
@@ -253,31 +212,6 @@ io.on("connection", (socket) => {
 
     players.set(socket.id, updatedPlayer);
 
-    // Broadcast movement immediately to all connected clients.
-    io.emit("player:moved", updatedPlayer);
-
-    try {
-      // Persist the latest coordinates and geospatial location.
-      await getDB()
-        .collection("players")
-        .updateOne(
-          { id: socket.id },
-          {
-            $set: {
-              x: updatedPlayer.x,
-              y: updatedPlayer.y,
-              location: [updatedPlayer.x, updatedPlayer.y],
-              updatedAt: new Date(),
-            },
-          }
-        );
-
-      // Group users by proximity and report back to the mover.
-      const nearbyPlayers = await findNearbyPlayers(updatedPlayer);
-      socket.emit("player:nearby", nearbyPlayers);
-    } catch (error) {
-      console.error(
-        "Failed to update position / find nearby players:",
     try {
       await db.collection("players").updateOne(
         { socketId: socket.id },
@@ -370,8 +304,6 @@ const PORT = process.env.PORT || 3000;
 
 async function startServer() {
   try {
-    await connectDB();
-    await ensureProximityIndex();
     await mongoClient.connect();
     db = mongoClient.db("proxispeak");
 
