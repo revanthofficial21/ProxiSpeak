@@ -1,4 +1,3 @@
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import "./App.css";
@@ -28,12 +27,10 @@ function drawOfficeFurniture(ctx) {
     ctx.lineWidth = 2;
     ctx.strokeRect(desk.x, desk.y, desk.width, desk.height);
 
-    // Computer screen
     ctx.fillStyle = "#38bdf8";
     ctx.fillRect(desk.x + 42, desk.y + 8, 36, 20);
   });
 
-  // Meeting table
   const table = obstacles[4];
 
   ctx.fillStyle = "#854d0e";
@@ -42,7 +39,6 @@ function drawOfficeFurniture(ctx) {
   ctx.strokeStyle = "#fbbf24";
   ctx.strokeRect(table.x, table.y, table.width, table.height);
 
-  // Room labels
   ctx.fillStyle = "#cbd5e1";
   ctx.font = "16px Arial";
   ctx.textAlign = "left";
@@ -56,12 +52,10 @@ function hitsObstacle(x, y) {
       obstacle.x,
       Math.min(x, obstacle.x + obstacle.width)
     );
-
     const closestY = Math.max(
       obstacle.y,
       Math.min(y, obstacle.y + obstacle.height)
     );
-
     const distanceX = x - closestX;
     const distanceY = y - closestY;
 
@@ -82,38 +76,51 @@ export default function App() {
 
   const [connected, setConnected] = useState(false);
   const [playerCount, setPlayerCount] = useState(0);
+  const [nearbyPlayers, setNearbyPlayers] = useState([]);
 
   const updatePlayerCount = useCallback(() => {
     setPlayerCount(playersRef.current.size);
   }, []);
 
-  // Socket.IO connection and multiplayer events
   useEffect(() => {
     const socket = io(SERVER_URL);
     socketRef.current = socket;
 
     socket.on("connect", () => {
       setConnected(true);
+    });
+
+    socket.on("disconnect", () => {
+      setConnected(false);
+      setNearbyPlayers([]);
+      playersRef.current.clear();
       updatePlayerCount();
     });
-    socket.on("disconnect", () => setConnected(false));
 
     socket.on("world:state", (players) => {
+      if (!Array.isArray(players)) return;
+
       playersRef.current = new Map(
-        players.map((player) => [player.id, player])
+        players
+          .filter((player) => player && typeof player.id === "string")
+          .map((player) => [player.id, player])
       );
       updatePlayerCount();
     });
 
     socket.on("player:joined", (player) => {
+      if (!player || typeof player.id !== "string") return;
+
       playersRef.current.set(player.id, player);
       updatePlayerCount();
     });
 
     socket.on("player:moved", (player) => {
-      if (player.id === socket.id) return;
+      if (!player || typeof player.id !== "string" || player.id === socket.id) {
+        return;
+      }
+
       playersRef.current.set(player.id, player);
-      updatePlayerCount();
     });
 
     socket.on("player:left", (id) => {
@@ -121,13 +128,27 @@ export default function App() {
       updatePlayerCount();
     });
 
+    socket.on("player:nearby", (players) => {
+      if (!Array.isArray(players)) return;
+
+      setNearbyPlayers(
+        players.filter(
+          (player) =>
+            player &&
+            typeof player.id === "string" &&
+            Number.isFinite(player.x) &&
+            Number.isFinite(player.y)
+        )
+      );
+    });
+
     return () => {
+      socket.removeAllListeners();
       socket.disconnect();
       socketRef.current = null;
     };
   }, [updatePlayerCount]);
 
-  // Keyboard movement and Canvas rendering
   useEffect(() => {
     const canvas = canvasRef.current;
     const canvasWrap = canvasWrapRef.current;
@@ -144,9 +165,16 @@ export default function App() {
       const key = event.key.toLowerCase();
       if (!gameFocusedRef.current) return;
       if (
-        !["arrowup", "arrowdown", "arrowleft", "arrowright", "w", "a", "s", "d"].includes(
-          key
-        )
+        ![
+          "arrowup",
+          "arrowdown",
+          "arrowleft",
+          "arrowright",
+          "w",
+          "a",
+          "s",
+          "d",
+        ].includes(key)
       ) {
         return;
       }
@@ -167,6 +195,7 @@ export default function App() {
     const handleFocus = () => {
       gameFocusedRef.current = true;
     };
+
     const handleBlur = () => {
       gameFocusedRef.current = false;
       clearKeys();
@@ -189,69 +218,58 @@ export default function App() {
         : 0;
       previousFrame = timestamp;
 
-      // Move the local player and check furniture collisions
       if (current && socket?.connected) {
         let dx = 0;
         let dy = 0;
 
-        if (keys["arrowleft"] || keys["a"]) dx -= 1;
-        if (keys["arrowright"] || keys["d"]) dx += 1;
-        if (keys["arrowup"] || keys["w"]) dy -= 1;
-        if (keys["arrowdown"] || keys["s"]) dy += 1;
+        if (keys["arrowleft"] || keys.a) dx -= 1;
+        if (keys["arrowright"] || keys.d) dx += 1;
+        if (keys["arrowup"] || keys.w) dy -= 1;
+        if (keys["arrowdown"] || keys.s) dy += 1;
 
         if (dx !== 0 || dy !== 0) {
           const length = Math.hypot(dx, dy);
           const distance = SPEED * deltaTime;
           const stepX = (dx / length) * distance;
           const stepY = (dy / length) * distance;
-
           const nextX = Math.max(
             AVATAR_RADIUS,
             Math.min(WORLD_WIDTH - AVATAR_RADIUS, current.x + stepX)
           );
-
           const nextY = Math.max(
             AVATAR_RADIUS,
             Math.min(WORLD_HEIGHT - AVATAR_RADIUS, current.y + stepY)
           );
 
-          // Check horizontal and vertical movement separately,
-          // allowing the avatar to slide around furniture.
           if (!hitsObstacle(nextX, current.y)) {
             current.x = nextX;
           }
-
           if (!hitsObstacle(current.x, nextY)) {
             current.y = nextY;
           }
 
-          if (timestamp - lastSent > 40 && socket?.connected) {
+          if (timestamp - lastSent > 40) {
             socket.emit("player:move", {
               x: current.x,
               y: current.y,
             });
-
             lastSent = timestamp;
           }
         }
       }
 
-      // Background
       ctx.clearRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
       ctx.fillStyle = "#101827";
       ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
 
-      // Grid
       ctx.strokeStyle = "#263449";
       ctx.lineWidth = 1;
-
       for (let x = 0; x <= WORLD_WIDTH; x += 40) {
         ctx.beginPath();
         ctx.moveTo(x, 0);
         ctx.lineTo(x, WORLD_HEIGHT);
         ctx.stroke();
       }
-
       for (let y = 0; y <= WORLD_HEIGHT; y += 40) {
         ctx.beginPath();
         ctx.moveTo(0, y);
@@ -259,10 +277,8 @@ export default function App() {
         ctx.stroke();
       }
 
-      // Furniture is drawn before avatars
       drawOfficeFurniture(ctx);
 
-      // Draw all connected players
       for (const player of players.values()) {
         const isMe = player.id === me;
 
@@ -301,7 +317,7 @@ export default function App() {
       canvasWrap.removeEventListener("blur", handleBlur);
       window.removeEventListener("blur", clearKeys);
     };
-  }, [updatePlayerCount]);
+  }, []);
 
   return (
     <main className="app">
@@ -372,6 +388,39 @@ export default function App() {
           </div>
           <span className="footer-note">Multiplayer movement prototype</span>
         </div>
+      </section>
+
+      <section
+        className="nearby-panel"
+        style={{
+          marginTop: "16px",
+          padding: "16px 20px",
+          border: "1px solid #334155",
+          borderRadius: "12px",
+          background: "#111c2e",
+          color: "#e2e8f0",
+        }}
+      >
+        <h3 style={{ margin: "0 0 8px", fontSize: "16px" }}>
+          Nearby players ({nearbyPlayers.length})
+        </h3>
+        {nearbyPlayers.length === 0 ? (
+          <p style={{ margin: 0, color: "#94a3b8" }}>
+            No players within 100 pixels. Move closer to another player to see
+            them here.
+          </p>
+        ) : (
+          <ul style={{ margin: 0, paddingLeft: "20px" }}>
+            {nearbyPlayers.map((player) => (
+              <li key={player.id}>
+                {player.name || `Player ${player.id.slice(0, 4)}`}
+                {typeof player.x === "number" && typeof player.y === "number"
+                  ? ` — position (${Math.round(player.x)}, ${Math.round(player.y)})`
+                  : ""}
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       <p className="note">

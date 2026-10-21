@@ -1,9 +1,13 @@
 
+
+
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
 require("dotenv").config();
+
+const { getNearbyPlayers } = require("./proximity");
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -18,7 +22,7 @@ const io = new Server(httpServer, {
   },
 });
 
-// Week 1: store connected players in memory.
+// Store connected players in memory.
 const players = new Map();
 
 const WORLD_WIDTH = 1000;
@@ -33,8 +37,10 @@ function allocateSpawnPosition() {
   const minimumSpacing = PLAYER_RADIUS * 2 + 8;
 
   for (const spacing of SPAWN_SPACINGS) {
-    const columns = Math.floor((WORLD_WIDTH - SPAWN_MARGIN * 2) / spacing) + 1;
-    const rows = Math.floor((WORLD_HEIGHT - SPAWN_MARGIN * 2) / spacing) + 1;
+    const columns =
+      Math.floor((WORLD_WIDTH - SPAWN_MARGIN * 2) / spacing) + 1;
+    const rows =
+      Math.floor((WORLD_HEIGHT - SPAWN_MARGIN * 2) / spacing) + 1;
 
     for (let row = 0; row < rows; row += 1) {
       for (let column = 0; column < columns; column += 1) {
@@ -42,25 +48,36 @@ function allocateSpawnPosition() {
           x: SPAWN_MARGIN + column * spacing,
           y: SPAWN_MARGIN + row * spacing,
         };
+
         const isAvailable = occupiedPositions.every(
           (occupied) =>
-            Math.hypot(position.x - occupied.x, position.y - occupied.y) >=
-            minimumSpacing
+            Math.hypot(
+              position.x - occupied.x,
+              position.y - occupied.y
+            ) >= minimumSpacing
         );
 
-        if (isAvailable) return position;
+        if (isAvailable) {
+          return position;
+        }
       }
     }
   }
 
   return {
-    x: SPAWN_MARGIN + (spawnSlots.size % (WORLD_WIDTH - SPAWN_MARGIN * 2)),
-    y: SPAWN_MARGIN +
-      (Math.floor(spawnSlots.size / (WORLD_WIDTH - SPAWN_MARGIN * 2)) %
+    x:
+      SPAWN_MARGIN +
+      (spawnSlots.size % (WORLD_WIDTH - SPAWN_MARGIN * 2)),
+    y:
+      SPAWN_MARGIN +
+      (Math.floor(
+        spawnSlots.size / (WORLD_WIDTH - SPAWN_MARGIN * 2)
+      ) %
         (WORLD_HEIGHT - SPAWN_MARGIN * 2)),
   };
 }
 
+// Backend health check.
 app.get("/", (req, res) => {
   res.json({
     message: "ProxiSpeak backend is running",
@@ -68,11 +85,21 @@ app.get("/", (req, res) => {
   });
 });
 
+function emitNearbyPlayers() {
+  for (const [playerId, player] of players) {
+    io.to(playerId).emit(
+      "player:nearby",
+      getNearbyPlayers(player, players)
+    );
+  }
+}
+
 io.on("connection", (socket) => {
   console.log(`Player connected: ${socket.id}`);
 
   const spawnPosition = allocateSpawnPosition();
   spawnSlots.set(socket.id, spawnPosition);
+
   const player = {
     id: socket.id,
     ...spawnPosition,
@@ -86,6 +113,8 @@ io.on("connection", (socket) => {
   // Tell existing clients that a new player joined.
   socket.broadcast.emit("player:joined", player);
 
+  emitNearbyPlayers();
+
   // Receive and broadcast movement.
   socket.on("player:move", (position) => {
     if (
@@ -98,20 +127,31 @@ io.on("connection", (socket) => {
 
     const updatedPlayer = {
       id: socket.id,
-      x: Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, position.x)),
-      y: Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, position.y)),
+      x: Math.max(
+        PLAYER_RADIUS,
+        Math.min(WORLD_WIDTH - PLAYER_RADIUS, position.x)
+      ),
+      y: Math.max(
+        PLAYER_RADIUS,
+        Math.min(WORLD_HEIGHT - PLAYER_RADIUS, position.y)
+      ),
     };
 
     players.set(socket.id, updatedPlayer);
 
     // Broadcast the updated position to all connected clients.
     io.emit("player:moved", updatedPlayer);
+
+    emitNearbyPlayers();
   });
 
   socket.on("disconnect", () => {
     players.delete(socket.id);
     spawnSlots.delete(socket.id);
+
     io.emit("player:left", socket.id);
+    emitNearbyPlayers();
+
     console.log(`Player disconnected: ${socket.id}`);
   });
 });
