@@ -1,5 +1,4 @@
 
-
 import { useState, useEffect } from 'react'
 import { io } from 'socket.io-client'
 import './App.css'
@@ -9,6 +8,7 @@ function App() {
   const [joined, setJoined] = useState(false)
   const [connected, setConnected] = useState(false)
   const [players, setPlayers] = useState([])
+  const [nearbyPlayers, setNearbyPlayers] = useState([])
   const [myPlayerId, setMyPlayerId] = useState(null)
   const [socketInstance, setSocketInstance] = useState(null)
 
@@ -36,6 +36,7 @@ function App() {
       console.log('Socket disconnected:', reason)
       setConnected(false)
       setMyPlayerId(null)
+      setNearbyPlayers([])
     })
 
     socket.on('world:state', (playerList) => {
@@ -69,6 +70,15 @@ function App() {
       setPlayers((current) =>
         current.filter((p) => p.id !== playerId)
       )
+
+      setNearbyPlayers((current) =>
+        current.filter((p) => p.id !== playerId)
+      )
+    })
+
+    socket.on('player:nearby', (nearbyList) => {
+      console.log('Nearby players:', nearbyList)
+      setNearbyPlayers(Array.isArray(nearbyList) ? nearbyList : [])
     })
 
     return () => {
@@ -81,6 +91,7 @@ function App() {
     if (!socketInstance?.connected || !myPlayerId || !joined) return
 
     const me = players.find((p) => p.id === myPlayerId)
+
     if (!me) {
       console.log('Your player is not in the current world state yet.')
       return
@@ -252,6 +263,22 @@ function App() {
             </p>
           ))}
         </article>
+
+        <article>
+          <h3>📍 Nearby Players (within 100px)</h3>
+
+          {nearbyPlayers.length === 0 ? (
+            <p>No nearby players detected. Move around to check.</p>
+          ) : (
+            nearbyPlayers.map((player) => (
+              <p key={player.id}>
+                <strong>{player.name || 'Player'}</strong>
+                {' — '}
+                X: {player.x}, Y: {player.y}
+              </p>
+            ))
+          )}
+        </article>
       </section>
 
       <footer>ProxiSpeak · Connect through sound.</footer>
@@ -260,4 +287,3 @@ function App() {
 }
 
 export default App
-
