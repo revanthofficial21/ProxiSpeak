@@ -1,39 +1,90 @@
-## 👨‍💻 My Contributions — Revanth
+# ProxiSpeak — Geospatial Proximity Audio Ecosystem
 
-**Role:** Project Lead & Backend Integration Developer
+ProxiSpeak is a real-time virtual collaboration environment designed to connect users through avatar movement and proximity-aware audio.
 
-### Backend Development
-- Developed the backend server using **Node.js and Express.js**.
-- Integrated **Socket.IO** to enable real-time communication between connected users.
-- Implemented player connection and disconnection handling.
-- Managed active player information, including unique player IDs and avatar coordinates.
-- Implemented real-time avatar movement updates and broadcasting to connected clients.
-- Added initial world-state synchronization so newly connected users can receive the positions of existing players.
-- Added coordinate validation and boundary constraints for avatar movement.
-- Implemented a backend health-check endpoint to verify server availability.
+**Technology Stack:** React, Node.js, Express.js, Socket.IO, MongoDB, WebRTC
 
-### Real-Time Communication Events
-| Event | Purpose |
+## 1. Project Overview
+
+ProxiSpeak is a full-stack web application designed to create a shared 2D virtual environment where users are represented by avatars. The application synchronizes avatar positions between connected browser clients and provides a foundation for proximity-based audio communication.
+
+The project combines a React-based frontend, a Node.js backend, real-time communication through Socket.IO, and MongoDB for player data and position storage.
+
+## 2. Problem Statement
+
+Traditional remote collaboration tools do not naturally recreate the experience of moving through a shared environment and interacting with nearby participants.
+
+ProxiSpeak aims to address this limitation by providing a virtual space where users can move around, observe other participants, and eventually communicate through distance-aware audio interactions.
+
+## 3. Project Objectives
+
+- Develop a shared 2D virtual environment.
+- Synchronize avatar positions between connected clients.
+- Manage player connections and disconnections in real time.
+- Store player information and avatar position data.
+- Prepare for proximity calculations and spatial queries.
+- Establish a foundation for real-time voice communication.
+
+## 4. Team Details and Responsibilities
+
+| Team Member | Role |
 |---|---|
-| `world:state` | Sends the current world state to a newly connected player |
-| `player:joined` | Notifies other users when a player joins |
-| `player:move` | Receives avatar movement updates from a client |
-| `player:moved` | Broadcasts updated avatar coordinates |
-| `player:left` | Notifies other users when a player disconnects |
+| Revanth | Project Lead, Backend Development and Integration |
+| Vivek | Frontend Development |
+| Janakirani Venkatesan | WebRTC Research and Testing |
+| Naseema | Database Development and Position Data |
 
-### Backend Integration
-- Integrated Express.js with an HTTP server and Socket.IO.
-- Configured Cross-Origin Resource Sharing (CORS) for local frontend connectivity.
-- Connected the backend to the existing MongoDB database module for player-position persistence.
-- Configured environment variables for backend settings and database connectivity.
-- Tested the backend and pushed the completed changes to my GitHub branch.
+### Individual Contribution — Naseema
 
-### Project Leadership
-- Coordinated backend integration with the frontend and database workstreams.
-- Supported team collaboration through Git branches and GitHub.
-- Focused on maintaining a working real-time movement system for subsequent feature integration.
+My responsibility is database development, focusing on MongoDB and virtual-world position data.
 
-### Current Deliverable
-A working backend that supports player connections, avatar-coordinate updates, real-time position broadcasting, and player disconnection handling.
+Key responsibilities:
 
-**Technologies:** Node.js · Express.js · Socket.IO · MongoDB · JavaScript · Git · GitHub
+- Design a MongoDB data model for player information and avatar coordinates.
+- Define how player identifiers and X/Y coordinates are represented.
+- Plan the storage structure for player-position information.
+- Coordinate database integration with the backend.
+- Support reliable storage and retrieval of player data.
+
+## 5. Project Structure
+
+- `client/` — Frontend application
+- `server/` — Backend application
+- `server/index.js` — Backend server
+
+## 6. Current Progress
+
+- Backend server setup.
+- Express.js and Socket.IO configuration.
+- Real-time player connection and movement handling.
+- MongoDB connection and player data integration.
+
+## 7. How to Run the Backend
+
+1. Open a terminal in the project folder.
+2. Navigate to the server directory:
+
+   `cd server`
+
+3. Install dependencies:
+
+   `npm install`
+
+4. Configure the MongoDB connection string in `server/.env`:
+
+   `MONGODB_URI=your_mongodb_connection_string`
+
+5. Start the backend:
+
+   `npm run dev`
+
+The backend uses port `3000` by default.
+
+## 8. Project Information
+
+- **Group:** 33
+- **Assignment Code:** ITS/WEB/1322
+
+## 9. Development Status
+
+ProxiSpeak is currently under development. Additional features and integrations will be implemented as the project progresses.
