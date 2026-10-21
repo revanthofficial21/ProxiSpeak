@@ -1,4 +1,5 @@
 
+
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
@@ -29,6 +30,45 @@ const players = new Map();
 
 const WORLD_WIDTH = 1000;
 const WORLD_HEIGHT = 600;
+const PROXIMITY_RADIUS = 100;
+const PLAYER_RADIUS = 20;
+const SPAWN_SPACINGS = [80, 60, 40];
+const SPAWN_MARGIN = PLAYER_RADIUS + 20;
+const spawnSlots = new Map();
+
+function allocateSpawnPosition() {
+  const occupiedPositions = Array.from(spawnSlots.values());
+  const minimumSpacing = PLAYER_RADIUS * 2 + 8;
+
+  for (const spacing of SPAWN_SPACINGS) {
+    const columns = Math.floor((WORLD_WIDTH - SPAWN_MARGIN * 2) / spacing) + 1;
+    const rows = Math.floor((WORLD_HEIGHT - SPAWN_MARGIN * 2) / spacing) + 1;
+
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        const position = {
+          x: SPAWN_MARGIN + column * spacing,
+          y: SPAWN_MARGIN + row * spacing,
+        };
+        const isAvailable = occupiedPositions.every(
+          (occupied) =>
+            Math.hypot(position.x - occupied.x, position.y - occupied.y) >=
+            minimumSpacing
+        );
+
+        if (isAvailable) return position;
+      }
+    }
+  }
+
+  return {
+    x: SPAWN_MARGIN + (spawnSlots.size % (WORLD_WIDTH - SPAWN_MARGIN * 2)),
+    y:
+      SPAWN_MARGIN +
+      (Math.floor(spawnSlots.size / (WORLD_WIDTH - SPAWN_MARGIN * 2)) %
+        (WORLD_HEIGHT - SPAWN_MARGIN * 2)),
+  };
+}
 
 app.get("/", (req, res) => {
   res.json({
@@ -40,17 +80,19 @@ app.get("/", (req, res) => {
 io.on("connection", (socket) => {
   console.log(`Player connected: ${socket.id}`);
 
+  const spawnPosition = allocateSpawnPosition();
+  spawnSlots.set(socket.id, spawnPosition);
+
   const player = {
     id: socket.id,
     socketId: socket.id,
     name: "",
-    x: 100,
-    y: 100,
+    ...spawnPosition,
   };
 
   players.set(socket.id, player);
 
-  // Save initial player data in MongoDB.
+  // Save the player's initial position.
   db.collection("players")
     .updateOne(
       { socketId: socket.id },
@@ -60,6 +102,7 @@ io.on("connection", (socket) => {
           name: player.name,
           x: player.x,
           y: player.y,
+          location: [player.x, player.y],
           connected: true,
           updatedAt: new Date(),
         },
@@ -78,11 +121,12 @@ io.on("connection", (socket) => {
 
   // Save the player's name.
   socket.on("player:setName", async (name, callback) => {
-    console.log("Received player name:", name);
-
     if (typeof name !== "string" || !name.trim()) {
       if (typeof callback === "function") {
-        callback({ success: false, error: "Invalid player name" });
+        callback({
+          success: false,
+          error: "Invalid player name",
+        });
       }
       return;
     }
@@ -91,7 +135,10 @@ io.on("connection", (socket) => {
 
     if (!currentPlayer) {
       if (typeof callback === "function") {
-        callback({ success: false, error: "Player not found" });
+        callback({
+          success: false,
+          error: "Player not found",
+        });
       }
       return;
     }
@@ -112,11 +159,8 @@ io.on("connection", (socket) => {
 
       console.log("Player name:", currentPlayer.name);
       console.log("MongoDB matched:", result.matchedCount);
-      console.log("MongoDB modified:", result.modifiedCount);
 
       if (result.matchedCount === 0) {
-        console.error("No MongoDB record matched this socket ID.");
-
         if (typeof callback === "function") {
           callback({
             success: false,
@@ -127,7 +171,6 @@ io.on("connection", (socket) => {
       }
 
       players.set(socket.id, currentPlayer);
-
       io.emit("player:renamed", currentPlayer);
 
       if (typeof callback === "function") {
@@ -148,8 +191,8 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Update player position.
-  socket.on("player:move", (position) => {
+  // Update position and find nearby players using MongoDB $near.
+  socket.on("player:move", async (position) => {
     if (
       !position ||
       !Number.isFinite(position.x) ||
@@ -163,35 +206,77 @@ io.on("connection", (socket) => {
 
     const updatedPlayer = {
       ...currentPlayer,
-      x: Math.max(0, Math.min(WORLD_WIDTH, position.x)),
-      y: Math.max(0, Math.min(WORLD_HEIGHT, position.y)),
+      x: Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, position.x)),
+      y: Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, position.y)),
     };
 
     players.set(socket.id, updatedPlayer);
 
-    db.collection("players")
-      .updateOne(
+    try {
+      await db.collection("players").updateOne(
         { socketId: socket.id },
         {
           $set: {
             name: updatedPlayer.name,
             x: updatedPlayer.x,
             y: updatedPlayer.y,
+            location: [updatedPlayer.x, updatedPlayer.y],
             connected: true,
             updatedAt: new Date(),
           },
         }
-      )
-      .catch((error) => {
-        console.error("Failed to update player position:", error.message);
-      });
+      );
 
-    io.emit("player:moved", updatedPlayer);
+      io.emit("player:moved", updatedPlayer);
+
+      // Find connected players within 100 pixels.
+      const nearbyPlayers = await db
+        .collection("players")
+        .find({
+          socketId: { $ne: socket.id },
+          connected: true,
+          location: {
+            $near: [updatedPlayer.x, updatedPlayer.y],
+            $maxDistance: PROXIMITY_RADIUS,
+          },
+        })
+        .project({
+          _id: 0,
+          socketId: 1,
+          name: 1,
+          x: 1,
+          y: 1,
+        })
+        .toArray();
+
+      const nearbyList = nearbyPlayers.map((nearbyPlayer) => ({
+        id: nearbyPlayer.socketId,
+        socketId: nearbyPlayer.socketId,
+        name: nearbyPlayer.name,
+        x: nearbyPlayer.x,
+        y: nearbyPlayer.y,
+      }));
+
+      socket.emit("player:nearby", nearbyList);
+
+      console.log(
+        "Nearby players for",
+        updatedPlayer.name || updatedPlayer.id,
+        ":",
+        nearbyList.length
+      );
+    } catch (error) {
+      console.error(
+        "Failed to update position/find nearby players:",
+        error.message
+      );
+    }
   });
 
-  // Handle player disconnection.
+  // Mark the player disconnected.
   socket.on("disconnect", () => {
     players.delete(socket.id);
+    spawnSlots.delete(socket.id);
 
     db.collection("players")
       .updateOne(
@@ -204,11 +289,13 @@ io.on("connection", (socket) => {
         }
       )
       .catch((error) => {
-        console.error("Failed to update player status:", error.message);
+        console.error(
+          "Failed to update player status:",
+          error.message
+        );
       });
 
     io.emit("player:left", socket.id);
-
     console.log(`Player disconnected: ${socket.id}`);
   });
 });
@@ -218,9 +305,40 @@ const PORT = process.env.PORT || 3000;
 async function startServer() {
   try {
     await mongoClient.connect();
-
     db = mongoClient.db("proxispeak");
 
+    const collection = db.collection("players");
+
+    // Mark old sessions disconnected after a server restart.
+    const cleanupResult = await collection.updateMany(
+      { connected: true },
+      {
+        $set: {
+          connected: false,
+          updatedAt: new Date(),
+        },
+      }
+    );
+
+    console.log(
+      "Old player sessions marked as disconnected:",
+      cleanupResult.modifiedCount
+    );
+
+    // Ensure the location field has a 2d geospatial index.
+    const existingIndexes = await collection.listIndexes().toArray();
+
+    const locationIndex = existingIndexes.find(
+      (index) => index.key && index.key.location
+    );
+
+    if (locationIndex && locationIndex.key.location !== "2d") {
+      await collection.dropIndex(locationIndex.name);
+    }
+
+    await collection.createIndex({ location: "2d" });
+
+    console.log("MongoDB 2d geospatial index ready!");
     console.log("MongoDB connected successfully!");
 
     httpServer.listen(PORT, () => {

@@ -208,6 +208,11 @@ input {
   outline: none;
 }
 
+.canvas-wrap:focus-visible {
+  outline: 2px solid #6ee7b7;
+  outline-offset: -2px;
+}
+
 .world-canvas {
   display: block;
   width: 100%;
@@ -307,4 +312,30 @@ input {
   .footer-note {
     display: none;
   }
+}
+
+.nearby-panel {
+  max-width: 720px;
+  margin: 0 auto 24px;
+  padding: 16px 20px;
+  border: 1px solid #263449;
+  border-radius: 12px;
+  background: #0f172a;
+  color: #cbd5e1;
+  text-align: left;
+}
+
+.nearby-panel strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #6ee7b7;
+}
+
+.nearby-panel ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.nearby-panel li {
+  margin: 4px 0;
 }
