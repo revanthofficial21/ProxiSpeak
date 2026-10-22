@@ -313,3 +313,66 @@ input {
     display: none;
   }
 }
+
+.nearby-panel {
+  max-width: 720px;
+  margin: 0 auto 24px;
+  padding: 16px 20px;
+  border: 1px solid #263449;
+  border-radius: 12px;
+  background: #0f172a;
+  color: #cbd5e1;
+  text-align: left;
+}
+
+.nearby-panel strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #6ee7b7;
+}
+
+.nearby-panel ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.nearby-panel li {
+  margin: 4px 0;
+}
+
+.audio-panel {
+  max-width: 720px;
+  margin: 0 auto 16px;
+  padding: 16px 20px;
+  border: 1px solid #263449;
+  border-radius: 12px;
+  background: #0f172a;
+  color: #cbd5e1;
+  text-align: left;
+}
+
+.audio-panel strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #6ee7b7;
+}
+
+.audio-panel button {
+  margin-top: 4px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  background: #34d399;
+  color: #06281d;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.audio-panel ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.audio-panel li {
+  margin: 4px 0;
+}

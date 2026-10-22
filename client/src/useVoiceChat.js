@@ -8,30 +8,57 @@ const ICE_SERVERS = [
 export default function useVoiceChat(socket, nearbyPlayers) {
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("Voice chat disabled");
+  const [peerStates, setPeerStates] = useState({});
 
   const streamRef = useRef(null);
   const peersRef = useRef(new Map());
   const nearbyRef = useRef(nearbyPlayers);
+  const pendingCandidatesRef = useRef(new Map());
 
   nearbyRef.current = nearbyPlayers;
 
-  const closePeer = useCallback((peerId, notify = false) => {
-    const entry = peersRef.current.get(peerId);
+  const closePeer = useCallback(
+    (peerId, notify = false, preserveCandidates = false) => {
+      const entry = peersRef.current.get(peerId);
+      if (!preserveCandidates) pendingCandidatesRef.current.delete(peerId);
 
-    if (entry) {
-      entry.pc.ontrack = null;
-      entry.pc.onicecandidate = null;
-      entry.pc.onconnectionstatechange = null;
-      entry.pc.close();
-      entry.audio.pause();
-      entry.audio.srcObject = null;
-      peersRef.current.delete(peerId);
-    }
+      if (entry) {
+        entry.pc.ontrack = null;
+        entry.pc.onicecandidate = null;
+        entry.pc.onconnectionstatechange = null;
+        entry.pc.close();
+        entry.audio.pause();
+        entry.audio.srcObject = null;
+        peersRef.current.delete(peerId);
+      }
 
-    if (notify && socket?.connected) {
-      socket.emit("voice:leave", { targetId: peerId });
+      setPeerStates((current) => {
+        if (!(peerId in current)) return current;
+        const next = { ...current };
+        delete next[peerId];
+        return next;
+      });
+
+      if (entry && notify && socket?.connected) {
+        socket.emit("voice:leave", { targetId: peerId });
+      }
+    },
+    [socket]
+  );
+
+  const flushCandidates = useCallback(async (peerId, pc) => {
+    const candidates = pendingCandidatesRef.current.get(peerId);
+    if (!candidates) return;
+
+    pendingCandidatesRef.current.delete(peerId);
+    for (const candidate of candidates) {
+      try {
+        await pc.addIceCandidate(candidate);
+      } catch (error) {
+        console.error("Could not add buffered ICE candidate:", error);
+      }
     }
-  }, [socket]);
+  }, []);
 
   const createOffer = useCallback(async (peerId) => {
     if (
@@ -71,13 +98,17 @@ export default function useVoiceChat(socket, nearbyPlayers) {
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed" ||
-          pc.connectionState === "closed") {
+      setPeerStates((current) => ({
+        ...current,
+        [peerId]: pc.connectionState,
+      }));
+      if (pc.connectionState === "failed" || pc.connectionState === "closed") {
         closePeer(peerId);
       }
     };
 
     peersRef.current.set(peerId, { pc, audio });
+    setPeerStates((current) => ({ ...current, [peerId]: pc.connectionState }));
 
     try {
       const offer = await pc.createOffer();
@@ -133,6 +164,7 @@ export default function useVoiceChat(socket, nearbyPlayers) {
 
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
+    pendingCandidatesRef.current.clear();
     setVoiceEnabled(false);
     setVoiceStatus("Voice chat disabled");
   }, [closePeer]);
@@ -156,7 +188,7 @@ export default function useVoiceChat(socket, nearbyPlayers) {
         return;
       }
 
-      closePeer(fromId);
+      closePeer(fromId, false, true);
 
       const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
       const audio = new Audio();
@@ -184,16 +216,24 @@ export default function useVoiceChat(socket, nearbyPlayers) {
       };
 
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "failed" ||
-            pc.connectionState === "closed") {
+        setPeerStates((current) => ({
+          ...current,
+          [fromId]: pc.connectionState,
+        }));
+        if (pc.connectionState === "failed" || pc.connectionState === "closed") {
           closePeer(fromId);
         }
       };
 
       peersRef.current.set(fromId, { pc, audio });
+      setPeerStates((current) => ({
+        ...current,
+        [fromId]: pc.connectionState,
+      }));
 
       try {
         await pc.setRemoteDescription(offer);
+        await flushCandidates(fromId, pc);
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
 
@@ -213,14 +253,21 @@ export default function useVoiceChat(socket, nearbyPlayers) {
 
       try {
         await entry.pc.setRemoteDescription(answer);
+        await flushCandidates(fromId, entry.pc);
       } catch (error) {
         console.error("Could not set voice answer:", error);
       }
     };
 
     const onCandidate = async ({ fromId, candidate } = {}) => {
+      if (!fromId || !candidate) return;
       const entry = peersRef.current.get(fromId);
-      if (!entry || !candidate) return;
+      if (!entry || !entry.pc.remoteDescription) {
+        const queue = pendingCandidatesRef.current.get(fromId) || [];
+        queue.push(candidate);
+        pendingCandidatesRef.current.set(fromId, queue);
+        return;
+      }
 
       try {
         await entry.pc.addIceCandidate(candidate);
@@ -246,7 +293,7 @@ export default function useVoiceChat(socket, nearbyPlayers) {
       socket.off("voice:ice-candidate", onCandidate);
       socket.off("voice:leave", onLeave);
     };
-  }, [socket, closePeer, createOffer]);
+  }, [socket, closePeer, createOffer, flushCandidates]);
 
   useEffect(() => {
     const nearbyIds = new Set(nearbyPlayers.map((player) => player.id));
@@ -272,6 +319,8 @@ export default function useVoiceChat(socket, nearbyPlayers) {
 
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
+      pendingCandidatesRef.current.clear();
+      setPeerStates({});
       setVoiceEnabled(false);
       setVoiceStatus("Server disconnected");
     };
@@ -286,12 +335,15 @@ export default function useVoiceChat(socket, nearbyPlayers) {
 
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
+      pendingCandidatesRef.current.clear();
+      setPeerStates({});
     };
   }, [socket, closePeer]);
 
   return {
     voiceEnabled,
     voiceStatus,
+    peerStates,
     enableVoice,
     disableVoice,
   };

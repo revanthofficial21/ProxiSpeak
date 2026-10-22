@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
-import "./App.css";
 import useVoiceChat from "./useVoiceChat";
+import "./App.css";
 
 const WORLD_WIDTH = 1000;
 const WORLD_HEIGHT = 600;
@@ -18,28 +18,21 @@ const obstacles = [
 ];
 
 function drawOfficeFurniture(ctx) {
-  const desks = obstacles.slice(0, 4);
-
-  desks.forEach((desk) => {
+  obstacles.slice(0, 4).forEach((desk) => {
     ctx.fillStyle = "#475569";
     ctx.fillRect(desk.x, desk.y, desk.width, desk.height);
-
     ctx.strokeStyle = "#94a3b8";
     ctx.lineWidth = 2;
     ctx.strokeRect(desk.x, desk.y, desk.width, desk.height);
-
     ctx.fillStyle = "#38bdf8";
     ctx.fillRect(desk.x + 42, desk.y + 8, 36, 20);
   });
 
   const table = obstacles[4];
-
   ctx.fillStyle = "#854d0e";
   ctx.fillRect(table.x, table.y, table.width, table.height);
-
   ctx.strokeStyle = "#fbbf24";
   ctx.strokeRect(table.x, table.y, table.width, table.height);
-
   ctx.fillStyle = "#cbd5e1";
   ctx.font = "16px Arial";
   ctx.textAlign = "left";
@@ -74,93 +67,92 @@ export default function App() {
   const keysRef = useRef({});
   const gameFocusedRef = useRef(false);
   const playersRef = useRef(new Map());
+  const nearbyRef = useRef(new Set());
 
   const [connected, setConnected] = useState(false);
   const [socket, setSocket] = useState(null);
-  const [playerCount, setPlayerCount] = useState(0);
+  const [players, setPlayers] = useState([]);
   const [nearbyPlayers, setNearbyPlayers] = useState([]);
-
-  const { voiceEnabled, voiceStatus, enableVoice, disableVoice } = useVoiceChat(socket, nearbyPlayers);
-
-  const updatePlayerCount = useCallback(() => {
-    setPlayerCount(playersRef.current.size);
-  }, []);
+  const {
+    voiceEnabled,
+    voiceStatus,
+    peerStates,
+    enableVoice,
+    disableVoice,
+  } = useVoiceChat(socket, nearbyPlayers);
 
   useEffect(() => {
-    const socket = io(SERVER_URL);
-    socketRef.current = socket;
-    setSocket(socket);
+    const client = io(SERVER_URL);
+    socketRef.current = client;
+    setSocket(client);
 
-    socket.on("connect", () => {
-      setConnected(true);
-    });
-
-    socket.on("disconnect", () => {
+    client.on("connect", () => setConnected(true));
+    client.on("disconnect", () => {
       setConnected(false);
-      setNearbyPlayers([]);
       playersRef.current.clear();
-      updatePlayerCount();
+      nearbyRef.current.clear();
+      setPlayers([]);
+      setNearbyPlayers([]);
     });
-
-    socket.on("world:state", (players) => {
-      if (!Array.isArray(players)) return;
-
+    client.on("world:state", (list) => {
+      if (!Array.isArray(list)) return;
       playersRef.current = new Map(
-        players
+        list
           .filter((player) => player && typeof player.id === "string")
           .map((player) => [player.id, player])
       );
-      updatePlayerCount();
+      setPlayers(Array.from(playersRef.current.values()));
     });
-
-    socket.on("player:joined", (player) => {
+    client.on("player:joined", (player) => {
       if (!player || typeof player.id !== "string") return;
-
       playersRef.current.set(player.id, player);
-      updatePlayerCount();
+      setPlayers(Array.from(playersRef.current.values()));
     });
-
-    socket.on("player:moved", (player) => {
-      if (!player || typeof player.id !== "string" || player.id === socket.id) {
+    client.on("player:moved", (player) => {
+      if (!player || typeof player.id !== "string" || player.id === client.id) {
         return;
       }
-
       playersRef.current.set(player.id, player);
     });
-
-    socket.on("player:left", (id) => {
-      playersRef.current.delete(id);
-      updatePlayerCount();
+    client.on("player:renamed", (player) => {
+      if (!player || typeof player.id !== "string") return;
+      playersRef.current.set(player.id, player);
+      setPlayers(Array.from(playersRef.current.values()));
     });
-
-    socket.on("player:nearby", (players) => {
-      if (!Array.isArray(players)) return;
-
-      setNearbyPlayers(
-        players.filter(
-          (player) =>
-            player &&
-            typeof player.id === "string" &&
-            Number.isFinite(player.x) &&
-            Number.isFinite(player.y)
-        )
+    client.on("player:nearby", (list) => {
+      const safeList = Array.isArray(list)
+        ? list.filter(
+            (player) =>
+              player &&
+              typeof player.id === "string" &&
+              Number.isFinite(player.x) &&
+              Number.isFinite(player.y)
+          )
+        : [];
+      nearbyRef.current = new Set(safeList.map((player) => player.id));
+      setNearbyPlayers(safeList);
+    });
+    client.on("player:left", (playerId) => {
+      if (typeof playerId !== "string") return;
+      playersRef.current.delete(playerId);
+      nearbyRef.current.delete(playerId);
+      setPlayers(Array.from(playersRef.current.values()));
+      setNearbyPlayers((current) =>
+        current.filter((player) => player.id !== playerId)
       );
     });
 
     return () => {
-      socket.removeAllListeners();
-      socket.disconnect();
+      client.disconnect();
       socketRef.current = null;
     };
-  }, [updatePlayerCount]);
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     const canvasWrap = canvasWrapRef.current;
-    if (!canvas || !canvasWrap) return;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !canvasWrap || !ctx) return undefined;
 
     let animationId;
     let lastSent = 0;
@@ -183,24 +175,19 @@ export default function App() {
       ) {
         return;
       }
-      if (key.startsWith("arrow")) {
-        event.preventDefault();
-      }
+      if (key.startsWith("arrow")) event.preventDefault();
       keysRef.current[key] = true;
     };
 
     const clearKeys = () => {
       keysRef.current = {};
     };
-
     const handleKeyUp = (event) => {
       keysRef.current[event.key.toLowerCase()] = false;
     };
-
     const handleFocus = () => {
       gameFocusedRef.current = true;
     };
-
     const handleBlur = () => {
       gameFocusedRef.current = false;
       clearKeys();
@@ -208,29 +195,24 @@ export default function App() {
 
     window.addEventListener("keydown", handleKeyDown, true);
     window.addEventListener("keyup", handleKeyUp, true);
+    window.addEventListener("blur", clearKeys);
     canvasWrap.addEventListener("focus", handleFocus);
     canvasWrap.addEventListener("blur", handleBlur);
-    window.addEventListener("blur", clearKeys);
 
     function draw(timestamp) {
-      const socket = socketRef.current;
-      const me = socket?.id;
-      const players = playersRef.current;
-      const current = me ? players.get(me) : null;
+      const client = socketRef.current;
+      const current = client ? playersRef.current.get(client.id) : null;
       const keys = keysRef.current;
-      const deltaTime = previousFrame
-        ? Math.min((timestamp - previousFrame) / 1000, 0.05)
-        : 0;
+      const deltaTime = Math.min((timestamp - previousFrame) / 1000, 0.05);
       previousFrame = timestamp;
 
-      if (current && socket?.connected) {
+      if (current && client?.connected) {
         let dx = 0;
         let dy = 0;
-
-        if (keys["arrowleft"] || keys.a) dx -= 1;
-        if (keys["arrowright"] || keys.d) dx += 1;
-        if (keys["arrowup"] || keys.w) dy -= 1;
-        if (keys["arrowdown"] || keys.s) dy += 1;
+        if (keys.arrowleft || keys.a) dx -= 1;
+        if (keys.arrowright || keys.d) dx += 1;
+        if (keys.arrowup || keys.w) dy -= 1;
+        if (keys.arrowdown || keys.s) dy += 1;
 
         if (dx !== 0 || dy !== 0) {
           const length = Math.hypot(dx, dy);
@@ -246,18 +228,11 @@ export default function App() {
             Math.min(WORLD_HEIGHT - AVATAR_RADIUS, current.y + stepY)
           );
 
-          if (!hitsObstacle(nextX, current.y)) {
-            current.x = nextX;
-          }
-          if (!hitsObstacle(current.x, nextY)) {
-            current.y = nextY;
-          }
+          if (!hitsObstacle(nextX, current.y)) current.x = nextX;
+          if (!hitsObstacle(current.x, nextY)) current.y = nextY;
 
           if (timestamp - lastSent > 40) {
-            socket.emit("player:move", {
-              x: current.x,
-              y: current.y,
-            });
+            client.emit("player:move", { x: current.x, y: current.y });
             lastSent = timestamp;
           }
         }
@@ -266,7 +241,6 @@ export default function App() {
       ctx.clearRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
       ctx.fillStyle = "#101827";
       ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-
       ctx.strokeStyle = "#263449";
       ctx.lineWidth = 1;
       for (let x = 0; x <= WORLD_WIDTH; x += 40) {
@@ -283,27 +257,34 @@ export default function App() {
       }
 
       drawOfficeFurniture(ctx);
+      for (const player of playersRef.current.values()) {
+        const isMe = player.id === client?.id;
+        if (!Number.isFinite(player.x) || !Number.isFinite(player.y)) continue;
 
-      for (const player of players.values()) {
-        const isMe = player.id === me;
+        if (!isMe && nearbyRef.current.has(player.id)) {
+          ctx.beginPath();
+          ctx.arc(player.x, player.y, 34, 0, Math.PI * 2);
+          ctx.strokeStyle = "#fbbf24";
+          ctx.lineWidth = 3;
+          ctx.stroke();
+          ctx.lineWidth = 1;
+        }
 
         ctx.beginPath();
         ctx.arc(player.x, player.y, AVATAR_RADIUS, 0, Math.PI * 2);
         ctx.fillStyle = isMe ? "#6ee7b7" : "#93c5fd";
         ctx.fill();
-
         ctx.beginPath();
         ctx.arc(player.x, player.y, 27, 0, Math.PI * 2);
         ctx.strokeStyle = isMe ? "#34d399" : "#60a5fa";
         ctx.globalAlpha = 0.5;
         ctx.stroke();
         ctx.globalAlpha = 1;
-
         ctx.fillStyle = "#f8fafc";
         ctx.font = "13px Arial";
         ctx.textAlign = "center";
         ctx.fillText(
-          isMe ? "You" : `Player ${player.id.slice(0, 4)}`,
+          isMe ? "You" : player.name || `Player ${player.id.slice(0, 4)}`,
           player.x,
           player.y - 34
         );
@@ -312,15 +293,15 @@ export default function App() {
       animationId = requestAnimationFrame(draw);
     }
 
-    draw();
+    draw(performance.now());
 
     return () => {
       cancelAnimationFrame(animationId);
       window.removeEventListener("keydown", handleKeyDown, true);
       window.removeEventListener("keyup", handleKeyUp, true);
+      window.removeEventListener("blur", clearKeys);
       canvasWrap.removeEventListener("focus", handleFocus);
       canvasWrap.removeEventListener("blur", handleBlur);
-      window.removeEventListener("blur", clearKeys);
     };
   }, []);
 
@@ -334,7 +315,6 @@ export default function App() {
             <p>Spatial collaboration, reimagined</p>
           </div>
         </div>
-
         <div className={`connection ${connected ? "online" : "offline"}`}>
           <span className="status-dot" />
           {connected ? "Server connected" : "Connecting to server…"}
@@ -349,11 +329,10 @@ export default function App() {
             Move around the canvas and see other connected players in real time.
           </p>
         </div>
-
         <div className="player-count">
-          <span className="count-number">{playerCount}</span>
+          <span className="count-number">{players.length}</span>
           <span className="count-label">
-            Connected player{playerCount === 1 ? "" : "s"}
+            Connected player{players.length === 1 ? "" : "s"}
           </span>
         </div>
       </section>
@@ -367,7 +346,6 @@ export default function App() {
           </div>
           <span className="coordinate-label">1000 × 600</span>
         </div>
-
         <div
           ref={canvasWrapRef}
           className="canvas-wrap"
@@ -382,7 +360,6 @@ export default function App() {
             className="world-canvas"
           />
         </div>
-
         <div className="world-footer">
           <div className="controls">
             <span className="key">W</span>
@@ -395,52 +372,24 @@ export default function App() {
         </div>
       </section>
 
-      <section
-        className="nearby-panel"
-        style={{
-          marginTop: "16px",
-          padding: "16px 20px",
-          border: "1px solid #334155",
-          borderRadius: "12px",
-          background: "#111c2e",
-          color: "#e2e8f0",
-        }}
-      >
-        <h3 style={{ margin: "0 0 8px", fontSize: "16px" }}>
-          Nearby players ({nearbyPlayers.length})
-        </h3>
+      <section className="nearby-panel">
+        <strong>Nearby players (within 100px): {nearbyPlayers.length}</strong>
         {nearbyPlayers.length === 0 ? (
-          <p style={{ margin: 0, color: "#94a3b8" }}>
-            No players within 100 pixels. Move closer to another player to see
-            them here.
-          </p>
+          <p>No one nearby yet — move closer to another avatar.</p>
         ) : (
-          <ul style={{ margin: 0, paddingLeft: "20px" }}>
+          <ul>
             {nearbyPlayers.map((player) => (
               <li key={player.id}>
-                {player.name || `Player ${player.id.slice(0, 4)}`}
-                {typeof player.x === "number" && typeof player.y === "number"
-                  ? ` — position (${Math.round(player.x)}, ${Math.round(player.y)})`
-                  : ""}
+                {player.name || `Player ${player.id.slice(0, 4)}`} — X:{" "}
+                {Math.round(player.x)}, Y: {Math.round(player.y)}
               </li>
             ))}
           </ul>
         )}
       </section>
-      <section
-        className="voice-panel"
-        style={{
-          marginTop: "16px",
-          padding: "16px 20px",
-          border: "1px solid #334155",
-          borderRadius: "12px",
-          background: "#111c2e",
-          color: "#e2e8f0",
-        }}
-      >
-        <h3 style={{ margin: "0 0 8px", fontSize: "16px" }}>
-          Proximity Voice Chat
-        </h3>
+
+      <section className="audio-panel">
+        <strong>Proximity Voice Chat</strong>
         <p>{voiceStatus}</p>
         <button
           type="button"
@@ -449,15 +398,20 @@ export default function App() {
         >
           {voiceEnabled ? "Disable Microphone" : "Enable Microphone"}
         </button>
-        <p style={{ color: "#94a3b8", fontSize: "13px" }}>
+        <p>
           Enable your microphone and move within 100 pixels of another player
-          to test proximity voice chat.
+          to connect.
         </p>
+        {Object.keys(peerStates).length > 0 && (
+          <ul>
+            {Object.entries(peerStates).map(([playerId, state]) => (
+              <li key={playerId}>
+                {`Player ${playerId.slice(0, 4)}`} — {state}
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
     </main>
   );
 }
-
-
-
-
