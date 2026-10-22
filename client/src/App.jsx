@@ -98,33 +98,58 @@ export default function App() {
       setConnected(true);
       updatePlayerCount();
     });
-    socket.on("disconnect", () => setConnected(false));
+    socket.on("disconnect", () => {
+      setConnected(false);
+      setNearbyPlayers([]);
+      nearbyRef.current = new Set();
+      playersRef.current.clear();
+      updatePlayerCount();
+    });
 
     socket.on("world:state", (players) => {
+      if (!Array.isArray(players)) return;
+
       playersRef.current = new Map(
-        players.map((player) => [player.id, player])
+        players
+          .filter((player) => player && typeof player.id === "string")
+          .map((player) => [player.id, player])
       );
       updatePlayerCount();
     });
 
     socket.on("player:joined", (player) => {
+      if (!player || typeof player.id !== "string") return;
+
       playersRef.current.set(player.id, player);
       updatePlayerCount();
     });
 
     socket.on("player:moved", (player) => {
-      if (player.id === socket.id) return;
+      if (!player || typeof player.id !== "string" || player.id === socket.id) {
+        return;
+      }
+
       playersRef.current.set(player.id, player);
       updatePlayerCount();
     });
 
     socket.on("player:nearby", (list) => {
-      const safe = Array.isArray(list) ? list : [];
+      const safe = Array.isArray(list)
+        ? list.filter(
+            (p) =>
+              p &&
+              typeof p.id === "string" &&
+              Number.isFinite(p.x) &&
+              Number.isFinite(p.y)
+          )
+        : [];
       nearbyRef.current = new Set(safe.map((p) => p.id));
       setNearbyPlayers(safe);
     });
 
     socket.on("player:left", (id) => {
+      if (typeof id !== "string") return;
+
       playersRef.current.delete(id);
       nearbyRef.current.delete(id);
       setNearbyPlayers((current) => current.filter((p) => p.id !== id));
@@ -132,6 +157,7 @@ export default function App() {
     });
 
     return () => {
+      socket.removeAllListeners();
       socket.disconnect();
       socketRef.current = null;
     };
