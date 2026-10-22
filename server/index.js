@@ -403,18 +403,23 @@ async function startServer() {
       cleanupResult.modifiedCount
     );
 
-    // Ensure the location field has a 2d geospatial index.
+    // Ensure the location field has a 2d geospatial index whose bounds cover
+    // the whole world. A 2d index defaults to [-180, 180] (longitude/latitude),
+    // which rejects our 1000x600 pixel coordinates, so set min/max explicitly.
+    // Drop any stale index (wrong type or wrong bounds) before recreating it.
     const existingIndexes = await collection.listIndexes().toArray();
-
     const locationIndex = existingIndexes.find(
       (index) => index.key && index.key.location
     );
 
-    if (locationIndex && locationIndex.key.location !== "2d") {
+    if (locationIndex) {
       await collection.dropIndex(locationIndex.name);
     }
 
-    await collection.createIndex({ location: "2d" });
+    await collection.createIndex(
+      { location: "2d" },
+      { min: 0, max: Math.max(WORLD_WIDTH, WORLD_HEIGHT) }
+    );
 
     console.log("MongoDB 2d geospatial index ready!");
     console.log("MongoDB connected successfully!");
