@@ -28,17 +28,50 @@ const io = new Server(httpServer, {
 
 const players = new Map();
 
+// Tracks which players are currently within proximity of each other.
+// Drives the enter/leave events and gates the WebRTC signaling relay.
+const proximityState = new Map();
+
 const WORLD_WIDTH = 1000;
 const WORLD_HEIGHT = 600;
 const PROXIMITY_RADIUS = 100;
-function arePlayersNearby(playerA, playerB) {
-  if (!playerA || !playerB) return false;
-  if (!playerA.name || !playerB.name) return false;
+const PLAYER_RADIUS = 20;
+const SPAWN_SPACINGS = [80, 60, 40];
+const SPAWN_MARGIN = PLAYER_RADIUS + 20;
+const spawnSlots = new Map();
 
-  const dx = playerA.x - playerB.x;
-  const dy = playerA.y - playerB.y;
+function allocateSpawnPosition() {
+  const occupiedPositions = Array.from(spawnSlots.values());
+  const minimumSpacing = PLAYER_RADIUS * 2 + 8;
 
-  return Math.sqrt(dx * dx + dy * dy) <= PROXIMITY_RADIUS;
+  for (const spacing of SPAWN_SPACINGS) {
+    const columns = Math.floor((WORLD_WIDTH - SPAWN_MARGIN * 2) / spacing) + 1;
+    const rows = Math.floor((WORLD_HEIGHT - SPAWN_MARGIN * 2) / spacing) + 1;
+
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        const position = {
+          x: SPAWN_MARGIN + column * spacing,
+          y: SPAWN_MARGIN + row * spacing,
+        };
+        const isAvailable = occupiedPositions.every(
+          (occupied) =>
+            Math.hypot(position.x - occupied.x, position.y - occupied.y) >=
+            minimumSpacing
+        );
+
+        if (isAvailable) return position;
+      }
+    }
+  }
+
+  return {
+    x: SPAWN_MARGIN + (spawnSlots.size % (WORLD_WIDTH - SPAWN_MARGIN * 2)),
+    y:
+      SPAWN_MARGIN +
+      (Math.floor(spawnSlots.size / (WORLD_WIDTH - SPAWN_MARGIN * 2)) %
+        (WORLD_HEIGHT - SPAWN_MARGIN * 2)),
+  };
 }
 
 app.get("/", (req, res) => {
@@ -48,15 +81,34 @@ app.get("/", (req, res) => {
   });
 });
 
+function publicPlayer(player) {
+  return { id: player.id, name: player.name, x: player.x, y: player.y };
+}
+
+function isNearby(aId, bId) {
+  const set = proximityState.get(aId);
+  return Boolean(set && set.has(bId));
+}
+
+// Relay a WebRTC signal to a peer, but only when the two are within proximity.
+function relaySignal(event, fromId, toId, payload) {
+  if (typeof toId !== "string" || toId === fromId) return;
+  if (!isNearby(fromId, toId)) return;
+
+  io.to(toId).emit(event, { ...payload, from: fromId });
+}
+
 io.on("connection", (socket) => {
   console.log(`Player connected: ${socket.id}`);
+
+  const spawnPosition = allocateSpawnPosition();
+  spawnSlots.set(socket.id, spawnPosition);
 
   const player = {
     id: socket.id,
     socketId: socket.id,
     name: "",
-    x: 100,
-    y: 100,
+    ...spawnPosition,
   };
 
   players.set(socket.id, player);
@@ -87,6 +139,34 @@ io.on("connection", (socket) => {
 
   socket.emit("world:state", Array.from(players.values()));
   socket.broadcast.emit("player:joined", player);
+
+  // WebRTC signaling — relayed only between players within proximity.
+  socket.on("webrtc:offer", (data) => {
+    relaySignal("webrtc:offer", socket.id, data && data.to, {
+      sdp: data && data.sdp,
+    });
+  });
+
+  socket.on("webrtc:answer", (data) => {
+    relaySignal("webrtc:answer", socket.id, data && data.to, {
+      sdp: data && data.sdp,
+    });
+  });
+
+  socket.on("webrtc:ice", (data) => {
+    relaySignal("webrtc:ice", socket.id, data && data.to, {
+      candidate: data && data.candidate,
+    });
+  });
+
+  socket.on("webrtc:leave", () => {
+    const nearSet = proximityState.get(socket.id);
+    if (!nearSet) return;
+
+    for (const peerId of nearSet) {
+      io.to(peerId).emit("webrtc:leave", { from: socket.id });
+    }
+  });
 
   // Save the player's name.
   socket.on("player:setName", async (name, callback) => {
@@ -175,8 +255,8 @@ io.on("connection", (socket) => {
 
     const updatedPlayer = {
       ...currentPlayer,
-      x: Math.max(0, Math.min(WORLD_WIDTH, position.x)),
-      y: Math.max(0, Math.min(WORLD_HEIGHT, position.y)),
+      x: Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, position.x)),
+      y: Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, position.y)),
     };
 
     players.set(socket.id, updatedPlayer);
@@ -198,13 +278,11 @@ io.on("connection", (socket) => {
 
       io.emit("player:moved", updatedPlayer);
 
-      // Find named, connected players within 100 pixels.
       const nearbyPlayers = await db
         .collection("players")
         .find({
           socketId: { $ne: socket.id },
           connected: true,
-          name: { $type: "string", $ne: "" },
           location: {
             $near: [updatedPlayer.x, updatedPlayer.y],
             $maxDistance: PROXIMITY_RADIUS,
@@ -229,12 +307,30 @@ io.on("connection", (socket) => {
 
       socket.emit("player:nearby", nearbyList);
 
-      console.log(
-        "Nearby players for",
-        updatedPlayer.name || updatedPlayer.id,
-        ":",
-        nearbyList.length
-      );
+      const newNearby = new Set(nearbyList.map((nearbyPlayer) => nearbyPlayer.id));
+      const oldNearby = proximityState.get(socket.id) || new Set();
+
+      for (const peerId of newNearby) {
+        if (oldNearby.has(peerId)) continue;
+
+        const nearbyPlayer = nearbyList.find((candidate) => candidate.id === peerId);
+        socket.emit("proximity:enter", nearbyPlayer);
+        io.to(peerId).emit("proximity:enter", publicPlayer(updatedPlayer));
+
+        const peerSet = proximityState.get(peerId) || new Set();
+        peerSet.add(socket.id);
+        proximityState.set(peerId, peerSet);
+      }
+
+      for (const peerId of oldNearby) {
+        if (newNearby.has(peerId)) continue;
+
+        socket.emit("proximity:leave", peerId);
+        io.to(peerId).emit("proximity:leave", socket.id);
+        proximityState.get(peerId)?.delete(socket.id);
+      }
+
+      proximityState.set(socket.id, newNearby);
     } catch (error) {
       console.error(
         "Failed to update position/find nearby players:",
@@ -243,87 +339,21 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Mark the player disconnected.
-
-  // Relay WebRTC signaling only between named players within 100 units.
-  function canSignalTo(targetId) {
-    if (typeof targetId !== "string" || targetId === socket.id) {
-      return false;
-    }
-
-    const sender = players.get(socket.id);
-    const receiver = players.get(targetId);
-
-    return (
-      Boolean(sender?.name) &&
-      Boolean(receiver?.name) &&
-      arePlayersNearby(sender, receiver)
-    );
-  }
-
-  // Send a WebRTC offer to a nearby player.
-  socket.on("voice:offer", ({ to, offer } = {}) => {
-    if (!canSignalTo(to) || offer?.type !== "offer") return;
-
-    io.to(to).emit("voice:offer", {
-      from: socket.id,
-      offer,
-    });
-  });
-
-  // Send a WebRTC answer to a nearby player.
-  socket.on("voice:answer", ({ to, answer } = {}) => {
-    if (!canSignalTo(to) || answer?.type !== "answer") return;
-
-    io.to(to).emit("voice:answer", {
-      from: socket.id,
-      answer,
-    });
-  });
-
-  // Exchange ICE candidates between nearby players.
-  socket.on("voice:ice-candidate", ({ to, candidate } = {}) => {
-    if (!canSignalTo(to)) return;
-
-    if (
-      candidate !== null &&
-      (typeof candidate !== "object" ||
-        typeof candidate.candidate !== "string")
-    ) {
-      return;
-    }
-
-    io.to(to).emit("voice:ice-candidate", {
-      from: socket.id,
-      candidate,
-    });
-  });
-
-  // Notify a nearby player that voice chat is ready.
-  socket.on("voice:ready", ({ to } = {}) => {
-    if (!canSignalTo(to)) return;
-
-    io.to(to).emit("voice:ready", {
-      from: socket.id,
-    });
-  });
-  // Allow a player to close an existing voice connection.
-  socket.on("voice:leave", ({ to } = {}) => {
-    if (
-      typeof to !== "string" ||
-      to === socket.id ||
-      !players.has(to)
-    ) {
-      return;
-    }
-
-    io.to(to).emit("voice:leave", {
-      from: socket.id,
-    });
-  });
-
+  // Handle player disconnection.
   socket.on("disconnect", () => {
     players.delete(socket.id);
+    spawnSlots.delete(socket.id);
+
+    // Let proximity peers tear down their audio connections.
+    const nearSet = proximityState.get(socket.id);
+    if (nearSet) {
+      for (const id of nearSet) {
+        io.to(id).emit("proximity:leave", socket.id);
+        const peerSet = proximityState.get(id);
+        if (peerSet) peerSet.delete(socket.id);
+      }
+      proximityState.delete(socket.id);
+    }
 
     db.collection("players")
       .updateOne(
@@ -355,8 +385,6 @@ async function startServer() {
     db = mongoClient.db("proxispeak");
 
     const collection = db.collection("players");
-
-    // Mark old sessions disconnected after a server restart.
     const cleanupResult = await collection.updateMany(
       { connected: true },
       {
@@ -372,18 +400,19 @@ async function startServer() {
       cleanupResult.modifiedCount
     );
 
-    // Ensure the location field has a 2d geospatial index.
     const existingIndexes = await collection.listIndexes().toArray();
-
     const locationIndex = existingIndexes.find(
       (index) => index.key && index.key.location
     );
 
-    if (locationIndex && locationIndex.key.location !== "2d") {
+    if (locationIndex) {
       await collection.dropIndex(locationIndex.name);
     }
 
-    await collection.createIndex({ location: "2d" });
+    await collection.createIndex(
+      { location: "2d" },
+      { min: 0, max: Math.max(WORLD_WIDTH, WORLD_HEIGHT) }
+    );
 
     console.log("MongoDB 2d geospatial index ready!");
     console.log("MongoDB connected successfully!");
@@ -398,5 +427,3 @@ async function startServer() {
 }
 
 startServer();
-
-
