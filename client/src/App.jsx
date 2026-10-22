@@ -9,6 +9,8 @@ const SERVER_URL = import.meta.env.VITE_SERVER_URL || "http://localhost:3000";
 const SPEED = 240;
 const AVATAR_RADIUS = 20;
 
+const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+
 const obstacles = [
   { x: 100, y: 120, width: 120, height: 55 },
   { x: 300, y: 120, width: 120, height: 55 },
@@ -80,14 +82,167 @@ export default function App() {
   const gameFocusedRef = useRef(false);
   const playersRef = useRef(new Map());
   const nearbyRef = useRef(new Set());
+  const localStreamRef = useRef(null);
+  const peersRef = useRef(new Map());
+  const remoteAudioRef = useRef(new Map());
+  const pendingPeersRef = useRef(new Set());
+  const audioEnabledRef = useRef(false);
 
   const [connected, setConnected] = useState(false);
   const [playerCount, setPlayerCount] = useState(0);
   const [nearbyPlayers, setNearbyPlayers] = useState([]);
+  const [audioEnabled, setAudioEnabled] = useState(false);
+  const [peerStates, setPeerStates] = useState({});
 
   const updatePlayerCount = useCallback(() => {
     setPlayerCount(playersRef.current.size);
   }, []);
+
+  // Tear down a single peer connection and its audio element.
+  const closePeer = useCallback((peerId) => {
+    const pc = peersRef.current.get(peerId);
+    if (pc) {
+      pc.onicecandidate = null;
+      pc.ontrack = null;
+      pc.onconnectionstatechange = null;
+      pc.close();
+      peersRef.current.delete(peerId);
+    }
+
+    const audio = remoteAudioRef.current.get(peerId);
+    if (audio) {
+      audio.srcObject = null;
+      remoteAudioRef.current.delete(peerId);
+    }
+
+    setPeerStates((current) => {
+      if (!(peerId in current)) return current;
+      const next = { ...current };
+      delete next[peerId];
+      return next;
+    });
+  }, []);
+
+  // Create (or return) the RTCPeerConnection for a nearby peer.
+  const createPeer = useCallback((peerId, initiator) => {
+    if (peersRef.current.has(peerId)) return peersRef.current.get(peerId);
+
+    const socket = socketRef.current;
+    if (!socket) return null;
+
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+    if (localStreamRef.current) {
+      localStreamRef.current
+        .getTracks()
+        .forEach((track) => pc.addTrack(track, localStreamRef.current));
+    }
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        socket.emit("webrtc:ice", { to: peerId, candidate: event.candidate });
+      }
+    };
+
+    pc.ontrack = (event) => {
+      let audio = remoteAudioRef.current.get(peerId);
+      if (!audio) {
+        audio = new Audio();
+        audio.autoplay = true;
+        remoteAudioRef.current.set(peerId, audio);
+      }
+      audio.srcObject = event.streams[0];
+      audio.play().catch(() => {});
+    };
+
+    pc.onconnectionstatechange = () => {
+      setPeerStates((current) => ({
+        ...current,
+        [peerId]: pc.connectionState,
+      }));
+    };
+
+    peersRef.current.set(peerId, pc);
+
+    // The peer with the lower id offers, so both sides agree who initiates.
+    if (initiator) {
+      pc.createOffer()
+        .then((offer) => pc.setLocalDescription(offer))
+        .then(() =>
+          socket.emit("webrtc:offer", { to: peerId, sdp: pc.localDescription })
+        )
+        .catch((error) =>
+          console.error("Failed to create offer:", error.message)
+        );
+    }
+
+    return pc;
+  }, []);
+
+  const handleOffer = useCallback(
+    async ({ from, sdp }) => {
+      if (typeof from !== "string" || !sdp) return;
+
+      const pc = createPeer(from, false);
+      if (!pc) return;
+
+      try {
+        await pc.setRemoteDescription(sdp);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socketRef.current?.emit("webrtc:answer", {
+          to: from,
+          sdp: pc.localDescription,
+        });
+      } catch (error) {
+        console.error("Failed to handle offer:", error.message);
+      }
+    },
+    [createPeer]
+  );
+
+  const handleAnswer = useCallback(async ({ from, sdp }) => {
+    const pc = peersRef.current.get(from);
+    if (!pc || !sdp) return;
+
+    try {
+      await pc.setRemoteDescription(sdp);
+    } catch (error) {
+      console.error("Failed to handle answer:", error.message);
+    }
+  }, []);
+
+  const handleIce = useCallback(async ({ from, candidate }) => {
+    const pc = peersRef.current.get(from);
+    if (!pc || !candidate) return;
+
+    try {
+      await pc.addIceCandidate(candidate);
+    } catch (error) {
+      console.error("Failed to add ICE candidate:", error.message);
+    }
+  }, []);
+
+  // Triggered by a click so the browser permits mic capture and playback.
+  const enableAudio = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+      });
+      localStreamRef.current = stream;
+      audioEnabledRef.current = true;
+      setAudioEnabled(true);
+
+      const socket = socketRef.current;
+      const pending = Array.from(pendingPeersRef.current);
+      pendingPeersRef.current.clear();
+      pending.forEach((peerId) => {
+        if (socket) createPeer(peerId, socket.id < peerId);
+      });
+    } catch (error) {
+      console.error("Microphone access failed:", error.message);
+    }
+  }, [createPeer]);
 
   // Socket.IO connection and multiplayer events
   useEffect(() => {
@@ -153,15 +308,49 @@ export default function App() {
       playersRef.current.delete(id);
       nearbyRef.current.delete(id);
       setNearbyPlayers((current) => current.filter((p) => p.id !== id));
+      closePeer(id);
       updatePlayerCount();
     });
+
+    // Proximity drives the audio sessions.
+    socket.on("proximity:enter", (peer) => {
+      if (!peer || typeof peer.id !== "string") return;
+
+      if (!audioEnabledRef.current) {
+        pendingPeersRef.current.add(peer.id);
+        return;
+      }
+
+      createPeer(peer.id, socket.id < peer.id);
+    });
+
+    socket.on("proximity:leave", (peerId) => {
+      if (typeof peerId !== "string") return;
+      pendingPeersRef.current.delete(peerId);
+      closePeer(peerId);
+    });
+
+    socket.on("webrtc:offer", handleOffer);
+    socket.on("webrtc:answer", handleAnswer);
+    socket.on("webrtc:ice", handleIce);
 
     return () => {
       socket.removeAllListeners();
       socket.disconnect();
       socketRef.current = null;
+      peersRef.current.forEach((pc) => pc.close());
+      peersRef.current.clear();
+      remoteAudioRef.current.clear();
+      setPeerStates({});
     };
-  }, [updatePlayerCount]);
+  }, [
+    updatePlayerCount,
+    createPeer,
+    closePeer,
+    handleOffer,
+    handleAnswer,
+    handleIce,
+  ]);
 
   // Keyboard movement and Canvas rendering
   useEffect(() => {
@@ -420,6 +609,28 @@ export default function App() {
           </div>
           <span className="footer-note">Multiplayer movement prototype</span>
         </div>
+      </section>
+
+      <section className="audio-panel">
+        <strong>Proximity audio</strong>
+        {audioEnabled ? (
+          <p>
+            Microphone active — move within 100px of another player to connect.
+          </p>
+        ) : (
+          <button type="button" onClick={enableAudio}>
+            Enable microphone
+          </button>
+        )}
+        {Object.keys(peerStates).length > 0 && (
+          <ul>
+            {Object.entries(peerStates).map(([id, state]) => (
+              <li key={id}>
+                {`Player ${id.slice(0, 4)}`} — {state}
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       <section className="nearby-panel">
