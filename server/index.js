@@ -28,6 +28,10 @@ const io = new Server(httpServer, {
 
 const players = new Map();
 
+// Tracks which players are currently within proximity of each other.
+// Drives the enter/leave events and gates the WebRTC signaling relay.
+const proximityState = new Map();
+
 const WORLD_WIDTH = 1000;
 const WORLD_HEIGHT = 600;
 const PROXIMITY_RADIUS = 100;
@@ -77,6 +81,23 @@ app.get("/", (req, res) => {
   });
 });
 
+function publicPlayer(player) {
+  return { id: player.id, name: player.name, x: player.x, y: player.y };
+}
+
+function isNearby(aId, bId) {
+  const set = proximityState.get(aId);
+  return Boolean(set && set.has(bId));
+}
+
+// Relay a WebRTC signal to a peer, but only when the two are within proximity.
+function relaySignal(event, fromId, toId, payload) {
+  if (typeof toId !== "string" || toId === fromId) return;
+  if (!isNearby(fromId, toId)) return;
+
+  io.to(toId).emit(event, { ...payload, from: fromId });
+}
+
 io.on("connection", (socket) => {
   console.log(`Player connected: ${socket.id}`);
 
@@ -118,6 +139,25 @@ io.on("connection", (socket) => {
 
   socket.emit("world:state", Array.from(players.values()));
   socket.broadcast.emit("player:joined", player);
+
+  // WebRTC signaling — relayed only between players within proximity.
+  socket.on("webrtc:offer", (data) => {
+    relaySignal("webrtc:offer", socket.id, data && data.to, {
+      sdp: data && data.sdp,
+    });
+  });
+
+  socket.on("webrtc:answer", (data) => {
+    relaySignal("webrtc:answer", socket.id, data && data.to, {
+      sdp: data && data.sdp,
+    });
+  });
+
+  socket.on("webrtc:ice", (data) => {
+    relaySignal("webrtc:ice", socket.id, data && data.to, {
+      candidate: data && data.candidate,
+    });
+  });
 
   // Save the player's name.
   socket.on("player:setName", async (name, callback) => {
@@ -259,6 +299,33 @@ io.on("connection", (socket) => {
 
       socket.emit("player:nearby", nearbyList);
 
+      // Proximity transitions: tell both sides who just entered / left range.
+      const newNearby = new Set(nearbyList.map((p) => p.id));
+      const oldNearby = proximityState.get(socket.id) || new Set();
+
+      for (const id of newNearby) {
+        if (oldNearby.has(id)) continue;
+
+        socket.emit("proximity:enter", nearbyList.find((p) => p.id === id));
+        io.to(id).emit("proximity:enter", publicPlayer(updatedPlayer));
+
+        const peerSet = proximityState.get(id) || new Set();
+        peerSet.add(socket.id);
+        proximityState.set(id, peerSet);
+      }
+
+      for (const id of oldNearby) {
+        if (newNearby.has(id)) continue;
+
+        socket.emit("proximity:leave", id);
+        io.to(id).emit("proximity:leave", socket.id);
+
+        const peerSet = proximityState.get(id);
+        if (peerSet) peerSet.delete(socket.id);
+      }
+
+      proximityState.set(socket.id, newNearby);
+
       console.log(
         "Nearby players for",
         updatedPlayer.name || updatedPlayer.id,
@@ -277,6 +344,17 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     players.delete(socket.id);
     spawnSlots.delete(socket.id);
+
+    // Let proximity peers tear down their audio connections.
+    const nearSet = proximityState.get(socket.id);
+    if (nearSet) {
+      for (const id of nearSet) {
+        io.to(id).emit("proximity:leave", socket.id);
+        const peerSet = proximityState.get(id);
+        if (peerSet) peerSet.delete(socket.id);
+      }
+      proximityState.delete(socket.id);
+    }
 
     db.collection("players")
       .updateOne(
