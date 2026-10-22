@@ -86,6 +86,8 @@ export default function App() {
   const peersRef = useRef(new Map());
   const remoteAudioRef = useRef(new Map());
   const pendingPeersRef = useRef(new Set());
+  const pendingOffersRef = useRef(new Map());
+  const pendingCandidatesRef = useRef(new Map());
   const audioEnabledRef = useRef(false);
 
   const [connected, setConnected] = useState(false);
@@ -100,6 +102,10 @@ export default function App() {
 
   // Tear down a single peer connection and its audio element.
   const closePeer = useCallback((peerId) => {
+    pendingPeersRef.current.delete(peerId);
+    pendingOffersRef.current.delete(peerId);
+    pendingCandidatesRef.current.delete(peerId);
+
     const pc = peersRef.current.get(peerId);
     if (pc) {
       pc.onicecandidate = null;
@@ -179,15 +185,29 @@ export default function App() {
     return pc;
   }, []);
 
-  const handleOffer = useCallback(
-    async ({ from, sdp }) => {
-      if (typeof from !== "string" || !sdp) return;
+  // Apply ICE candidates that arrived before the remote description was set.
+  const flushCandidates = useCallback(async (peerId, pc) => {
+    const queue = pendingCandidatesRef.current.get(peerId);
+    if (!queue || queue.length === 0) return;
 
+    pendingCandidatesRef.current.delete(peerId);
+    for (const candidate of queue) {
+      try {
+        await pc.addIceCandidate(candidate);
+      } catch (error) {
+        console.error("Failed to add buffered ICE candidate:", error.message);
+      }
+    }
+  }, []);
+
+  const answerOffer = useCallback(
+    async (from, sdp) => {
       const pc = createPeer(from, false);
       if (!pc) return;
 
       try {
         await pc.setRemoteDescription(sdp);
+        await flushCandidates(from, pc);
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         socketRef.current?.emit("webrtc:answer", {
@@ -198,23 +218,53 @@ export default function App() {
         console.error("Failed to handle offer:", error.message);
       }
     },
-    [createPeer]
+    [createPeer, flushCandidates]
   );
 
-  const handleAnswer = useCallback(async ({ from, sdp }) => {
-    const pc = peersRef.current.get(from);
-    if (!pc || !sdp) return;
+  const handleOffer = useCallback(
+    ({ from, sdp }) => {
+      if (typeof from !== "string" || !sdp) return;
 
-    try {
-      await pc.setRemoteDescription(sdp);
-    } catch (error) {
-      console.error("Failed to handle answer:", error.message);
-    }
-  }, []);
+      // If our mic isn't on yet, hold the offer until it is — otherwise we'd
+      // answer without our audio track and could never be heard.
+      if (!audioEnabledRef.current) {
+        pendingOffersRef.current.set(from, sdp);
+        return;
+      }
+
+      answerOffer(from, sdp);
+    },
+    [answerOffer]
+  );
+
+  const handleAnswer = useCallback(
+    async ({ from, sdp }) => {
+      const pc = peersRef.current.get(from);
+      if (!pc || !sdp) return;
+
+      try {
+        await pc.setRemoteDescription(sdp);
+        await flushCandidates(from, pc);
+      } catch (error) {
+        console.error("Failed to handle answer:", error.message);
+      }
+    },
+    [flushCandidates]
+  );
 
   const handleIce = useCallback(async ({ from, candidate }) => {
+    if (typeof from !== "string" || !candidate) return;
+
     const pc = peersRef.current.get(from);
-    if (!pc || !candidate) return;
+
+    // Buffer until the peer exists and its remote description is set — an
+    // addIceCandidate before that throws and the candidate would be lost.
+    if (!pc || !pc.remoteDescription) {
+      const queue = pendingCandidatesRef.current.get(from) || [];
+      queue.push(candidate);
+      pendingCandidatesRef.current.set(from, queue);
+      return;
+    }
 
     try {
       await pc.addIceCandidate(candidate);
@@ -239,10 +289,15 @@ export default function App() {
       pending.forEach((peerId) => {
         if (socket) createPeer(peerId, socket.id < peerId);
       });
+
+      // Answer any offers that arrived before the mic was on.
+      const offers = Array.from(pendingOffersRef.current.entries());
+      pendingOffersRef.current.clear();
+      offers.forEach(([from, sdp]) => answerOffer(from, sdp));
     } catch (error) {
       console.error("Microphone access failed:", error.message);
     }
-  }, [createPeer]);
+  }, [createPeer, answerOffer]);
 
   // Socket.IO connection and multiplayer events
   useEffect(() => {
