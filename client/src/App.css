@@ -162,3 +162,30 @@ button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
+/* Proximity voice chat layout */
+.voice-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 20px 0;
+}
+
+.voice-controls h3 {
+  flex-basis: 100%;
+  margin-bottom: 8px;
+}
+
+.voice-controls p {
+  flex-basis: 100%;
+  margin: 4px 0;
+}
+
+.voice-controls button {
+  margin: 4px;
+}
+
+.voice-controls [role="alert"] {
+  color: #b00020;
+}

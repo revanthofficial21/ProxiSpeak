@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react'
 import { io } from 'socket.io-client'
 import './App.css'
+import { useVoiceChat } from './useVoiceChat'
 
 function App() {
   const [playerName, setPlayerName] = useState('')
@@ -11,6 +12,13 @@ function App() {
   const [nearbyPlayers, setNearbyPlayers] = useState([])
   const [myPlayerId, setMyPlayerId] = useState(null)
   const [socketInstance, setSocketInstance] = useState(null)
+
+  const voice = useVoiceChat({
+    socket: socketInstance,
+    joined,
+    players,
+    myPlayerId,
+  })
 
   useEffect(() => {
     const socket = io('http://localhost:3000', {
@@ -221,6 +229,38 @@ function App() {
             </div>
 
             <button type="button" onClick={() => setJoined(false)}>
+            <div className="voice-controls">
+              <h3>Proximity Voice Chat</h3>
+
+              {!voice.micEnabled ? (
+                <button type="button" onClick={voice.enableVoice}>
+                  Enable Voice
+                </button>
+              ) : (
+                <>
+                  <button type="button" onClick={voice.toggleMute}>
+                    {voice.muted ? 'Unmute Microphone' : 'Mute Microphone'}
+                  </button>
+
+                  <button type="button" onClick={voice.disableVoice}>
+                    Leave Voice
+                  </button>
+                </>
+              )}
+
+              <p>
+                Microphone: {voice.micEnabled
+                  ? (voice.muted ? 'Muted' : 'On')
+                  : 'Off'}
+              </p>
+
+              <p>Connected voice players: {voice.connectedVoicePeers.length}</p>
+
+              {voice.voiceError && (
+                <p role="alert">{voice.voiceError}</p>
+              )}
+            </div>
+
               Go back
             </button>
           </div>
@@ -287,3 +327,5 @@ function App() {
 }
 
 export default App
+
+

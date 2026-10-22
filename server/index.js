@@ -31,6 +31,15 @@ const players = new Map();
 const WORLD_WIDTH = 1000;
 const WORLD_HEIGHT = 600;
 const PROXIMITY_RADIUS = 100;
+function arePlayersNearby(playerA, playerB) {
+  if (!playerA || !playerB) return false;
+  if (!playerA.name || !playerB.name) return false;
+
+  const dx = playerA.x - playerB.x;
+  const dy = playerA.y - playerB.y;
+
+  return Math.sqrt(dx * dx + dy * dy) <= PROXIMITY_RADIUS;
+}
 
 app.get("/", (req, res) => {
   res.json({
@@ -235,6 +244,84 @@ io.on("connection", (socket) => {
   });
 
   // Mark the player disconnected.
+
+  // Relay WebRTC signaling only between named players within 100 units.
+  function canSignalTo(targetId) {
+    if (typeof targetId !== "string" || targetId === socket.id) {
+      return false;
+    }
+
+    const sender = players.get(socket.id);
+    const receiver = players.get(targetId);
+
+    return (
+      Boolean(sender?.name) &&
+      Boolean(receiver?.name) &&
+      arePlayersNearby(sender, receiver)
+    );
+  }
+
+  // Send a WebRTC offer to a nearby player.
+  socket.on("voice:offer", ({ to, offer } = {}) => {
+    if (!canSignalTo(to) || offer?.type !== "offer") return;
+
+    io.to(to).emit("voice:offer", {
+      from: socket.id,
+      offer,
+    });
+  });
+
+  // Send a WebRTC answer to a nearby player.
+  socket.on("voice:answer", ({ to, answer } = {}) => {
+    if (!canSignalTo(to) || answer?.type !== "answer") return;
+
+    io.to(to).emit("voice:answer", {
+      from: socket.id,
+      answer,
+    });
+  });
+
+  // Exchange ICE candidates between nearby players.
+  socket.on("voice:ice-candidate", ({ to, candidate } = {}) => {
+    if (!canSignalTo(to)) return;
+
+    if (
+      candidate !== null &&
+      (typeof candidate !== "object" ||
+        typeof candidate.candidate !== "string")
+    ) {
+      return;
+    }
+
+    io.to(to).emit("voice:ice-candidate", {
+      from: socket.id,
+      candidate,
+    });
+  });
+
+  // Notify a nearby player that voice chat is ready.
+  socket.on("voice:ready", ({ to } = {}) => {
+    if (!canSignalTo(to)) return;
+
+    io.to(to).emit("voice:ready", {
+      from: socket.id,
+    });
+  });
+  // Allow a player to close an existing voice connection.
+  socket.on("voice:leave", ({ to } = {}) => {
+    if (
+      typeof to !== "string" ||
+      to === socket.id ||
+      !players.has(to)
+    ) {
+      return;
+    }
+
+    io.to(to).emit("voice:leave", {
+      from: socket.id,
+    });
+  });
+
   socket.on("disconnect", () => {
     players.delete(socket.id);
 
@@ -311,3 +398,5 @@ async function startServer() {
 }
 
 startServer();
+
+
