@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import "./App.css";
+import useVoiceChat from "./useVoiceChat";
 
 const WORLD_WIDTH = 1000;
 const WORLD_HEIGHT = 600;
@@ -75,8 +76,11 @@ export default function App() {
   const playersRef = useRef(new Map());
 
   const [connected, setConnected] = useState(false);
+  const [socket, setSocket] = useState(null);
   const [playerCount, setPlayerCount] = useState(0);
   const [nearbyPlayers, setNearbyPlayers] = useState([]);
+
+  const { voiceEnabled, voiceStatus, enableVoice, disableVoice } = useVoiceChat(socket, nearbyPlayers);
 
   const updatePlayerCount = useCallback(() => {
     setPlayerCount(playersRef.current.size);
@@ -85,6 +89,7 @@ export default function App() {
   useEffect(() => {
     const socket = io(SERVER_URL);
     socketRef.current = socket;
+    setSocket(socket);
 
     socket.on("connect", () => {
       setConnected(true);
@@ -422,10 +427,37 @@ export default function App() {
           </ul>
         )}
       </section>
-
-      <p className="note">
-        Audio proximity and WebRTC voice are planned for a later phase.
-      </p>
+      <section
+        className="voice-panel"
+        style={{
+          marginTop: "16px",
+          padding: "16px 20px",
+          border: "1px solid #334155",
+          borderRadius: "12px",
+          background: "#111c2e",
+          color: "#e2e8f0",
+        }}
+      >
+        <h3 style={{ margin: "0 0 8px", fontSize: "16px" }}>
+          Proximity Voice Chat
+        </h3>
+        <p>{voiceStatus}</p>
+        <button
+          type="button"
+          disabled={!connected}
+          onClick={voiceEnabled ? disableVoice : enableVoice}
+        >
+          {voiceEnabled ? "Disable Microphone" : "Enable Microphone"}
+        </button>
+        <p style={{ color: "#94a3b8", fontSize: "13px" }}>
+          Enable your microphone and move within 100 pixels of another player
+          to test proximity voice chat.
+        </p>
+      </section>
     </main>
   );
 }
+
+
+
+

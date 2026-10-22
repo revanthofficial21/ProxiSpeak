@@ -114,6 +114,104 @@ io.on("connection", (socket) => {
   socket.broadcast.emit("player:joined", player);
 
   emitNearbyPlayers();
+  
+  // WebRTC voice signaling — relay only to connected players
+
+
+
+  // Notify a nearby player that voice chat is ready.
+  socket.on("voice:ready", ({ targetId } = {}) => {
+    if (
+      typeof targetId !== "string" ||
+      !players.has(targetId) ||
+      !players.has(socket.id)
+    ) {
+      return;
+    }
+
+    const nearby = getNearbyPlayers(players.get(socket.id), players);
+
+    if (nearby.some((player) => player.id === targetId)) {
+      io.to(targetId).emit("voice:ready", {
+        fromId: socket.id,
+      });
+    }
+  });
+
+
+  socket.on("voice:offer", ({ targetId, offer } = {}) => {
+    if (
+      typeof targetId !== "string" ||
+      !offer ||
+      !players.has(targetId) ||
+      !players.has(socket.id)
+    ) {
+      return;
+    }
+
+    const nearby = getNearbyPlayers(players.get(socket.id), players);
+    if (!nearby.some((player) => player.id === targetId)) {
+      return;
+    }
+
+    io.to(targetId).emit("voice:offer", {
+      fromId: socket.id,
+      offer,
+    });
+  });
+
+  socket.on("voice:answer", ({ targetId, answer } = {}) => {
+    if (
+      typeof targetId !== "string" ||
+      !answer ||
+      !players.has(targetId) ||
+      !players.has(socket.id)
+    ) {
+      return;
+    }
+
+    const nearby = getNearbyPlayers(players.get(socket.id), players);
+    if (!nearby.some((player) => player.id === targetId)) {
+      return;
+    }
+
+    io.to(targetId).emit("voice:answer", {
+      fromId: socket.id,
+      answer,
+    });
+  });
+
+  socket.on("voice:ice-candidate", ({ targetId, candidate } = {}) => {
+    if (
+      typeof targetId !== "string" ||
+      !candidate ||
+      !players.has(targetId) ||
+      !players.has(socket.id)
+    ) {
+      return;
+    }
+
+    const nearby = getNearbyPlayers(players.get(socket.id), players);
+    if (!nearby.some((player) => player.id === targetId)) {
+      return;
+    }
+
+    io.to(targetId).emit("voice:ice-candidate", {
+      fromId: socket.id,
+      candidate,
+    });
+  });
+
+  socket.on("voice:leave", ({ targetId } = {}) => {
+    if (typeof targetId !== "string" || !players.has(targetId)) {
+      return;
+    }
+
+    io.to(targetId).emit("voice:leave", {
+      fromId: socket.id,
+    });
+  });
+
 
   // Receive and broadcast movement.
   socket.on("player:move", (position) => {
