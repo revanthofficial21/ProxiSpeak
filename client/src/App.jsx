@@ -8,6 +8,7 @@ const WORLD_HEIGHT = 600;
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "http://localhost:3000";
 const SPEED = 240;
 const AVATAR_RADIUS = 20;
+const DEFAULT_AVATAR_COLOR = "#6ee7b7";
 
 const obstacles = [
   { x: 100, y: 120, width: 120, height: 55 },
@@ -64,6 +65,7 @@ export default function App() {
   const canvasRef = useRef(null);
   const canvasWrapRef = useRef(null);
   const socketRef = useRef(null);
+  const chatLogRef = useRef(null);
   const keysRef = useRef({});
   const gameFocusedRef = useRef(false);
   const playersRef = useRef(new Map());
@@ -73,6 +75,26 @@ export default function App() {
   const [socket, setSocket] = useState(null);
   const [players, setPlayers] = useState([]);
   const [nearbyPlayers, setNearbyPlayers] = useState([]);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatError, setChatError] = useState("");
+  const [sendingChat, setSendingChat] = useState(false);
+  const [displayName, setDisplayName] = useState("");
+  const [profileError, setProfileError] = useState("");
+  const [savingName, setSavingName] = useState(false);
+  const [savingColor, setSavingColor] = useState(false);
+  const profilePlayer = players.find((player) => player.id === socket?.id);
+  const avatarColor = profilePlayer?.avatarColor || DEFAULT_AVATAR_COLOR;
+  const nearbyPlayerIds = new Set(nearbyPlayers.map((player) => player.id));
+  const peopleList = [...players].sort((first, second) => {
+    if (first.id === socket?.id) return -1;
+    if (second.id === socket?.id) return 1;
+    const firstName =
+      typeof first.name === "string" ? first.name.trim() : "";
+    const secondName =
+      typeof second.name === "string" ? second.name.trim() : "";
+    return firstName.localeCompare(secondName);
+  });
   const {
     voiceEnabled,
     voiceStatus,
@@ -101,7 +123,10 @@ export default function App() {
           .filter((player) => player && typeof player.id === "string")
           .map((player) => [player.id, player])
       );
-      setPlayers(Array.from(playersRef.current.values()));
+      const playerList = Array.from(playersRef.current.values());
+      setPlayers(playerList);
+      const ownPlayer = playerList.find((player) => player.id === client.id);
+      if (ownPlayer) setDisplayName(ownPlayer.name || "");
     });
     client.on("player:joined", (player) => {
       if (!player || typeof player.id !== "string") return;
@@ -115,6 +140,12 @@ export default function App() {
       playersRef.current.set(player.id, player);
     });
     client.on("player:renamed", (player) => {
+      if (!player || typeof player.id !== "string") return;
+      playersRef.current.set(player.id, player);
+      setPlayers(Array.from(playersRef.current.values()));
+      if (player.id === client.id) setDisplayName(player.name || "");
+    });
+    client.on("player:avatarColorUpdated", (player) => {
       if (!player || typeof player.id !== "string") return;
       playersRef.current.set(player.id, player);
       setPlayers(Array.from(playersRef.current.values()));
@@ -141,12 +172,121 @@ export default function App() {
         current.filter((player) => player.id !== playerId)
       );
     });
+    client.on("chat:message", (message) => {
+      if (
+        !message ||
+        typeof message.id !== "string" ||
+        typeof message.senderId !== "string" ||
+        typeof message.text !== "string" ||
+        typeof message.timestamp !== "string"
+      ) {
+        return;
+      }
+      setChatMessages((current) => [...current, message]);
+    });
 
     return () => {
       client.disconnect();
       socketRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const log = chatLogRef.current;
+    if (log) log.scrollTop = log.scrollHeight;
+  }, [chatMessages]);
+
+  const saveDisplayName = (event) => {
+    event.preventDefault();
+    const name = displayName.trim();
+    const client = socketRef.current;
+    if (!name) {
+      setProfileError("Enter a display name before saving.");
+      return;
+    }
+    if (!client?.connected) {
+      setProfileError("Connect to the server before updating your profile.");
+      return;
+    }
+
+    setSavingName(true);
+    setProfileError("");
+    client.timeout(5000).emit("player:setName", name, (timeoutError, result) => {
+      setSavingName(false);
+      if (timeoutError || !result?.success) {
+        setProfileError(result?.error || "Could not save your display name. Try again.");
+        return;
+      }
+      setDisplayName(result.name);
+    });
+  };
+
+  const updateAvatarColor = (event) => {
+    const color = event.target.value;
+    const client = socketRef.current;
+    const ownPlayer = client ? playersRef.current.get(client.id) : null;
+    if (!client?.connected || !ownPlayer) {
+      setProfileError("Connect to the server before updating your avatar color.");
+      return;
+    }
+
+    const previousColor = ownPlayer.avatarColor || DEFAULT_AVATAR_COLOR;
+    const optimisticPlayer = { ...ownPlayer, avatarColor: color };
+    playersRef.current.set(client.id, optimisticPlayer);
+    setPlayers(Array.from(playersRef.current.values()));
+    setSavingColor(true);
+    setProfileError("");
+    client.timeout(5000).emit(
+      "player:setAvatarColor",
+      color,
+      (timeoutError, result) => {
+        setSavingColor(false);
+        if (timeoutError || !result?.success) {
+          const currentPlayer = playersRef.current.get(client.id);
+          if (currentPlayer?.avatarColor === color) {
+            const restoredPlayer = {
+              ...currentPlayer,
+              avatarColor: previousColor,
+            };
+            playersRef.current.set(client.id, restoredPlayer);
+            setPlayers(Array.from(playersRef.current.values()));
+          }
+          setProfileError(
+            result?.error || "Could not save your avatar color. Try again."
+          );
+        }
+      }
+    );
+  };
+
+  const sendChatMessage = (event) => {
+    event.preventDefault();
+    const text = chatInput.trim();
+    const client = socketRef.current;
+    if (!text) {
+      setChatError("Write a message before sending.");
+      return;
+    }
+    if (text.length > 500) {
+      setChatError("Messages must be 500 characters or fewer.");
+      return;
+    }
+    if (!client?.connected) {
+      setChatError("Connect to the server before sending a message.");
+      return;
+    }
+
+    setChatError("");
+    setSendingChat(true);
+    client.timeout(5000).emit("chat:send", text, (timeoutError, result) => {
+      setSendingChat(false);
+      if (timeoutError || !result?.success) {
+        setChatError(result?.error || "Could not send your message. Try again.");
+        return;
+      }
+      setChatInput((current) => (current.trim() === text ? "" : current));
+    });
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -272,11 +412,11 @@ export default function App() {
 
         ctx.beginPath();
         ctx.arc(player.x, player.y, AVATAR_RADIUS, 0, Math.PI * 2);
-        ctx.fillStyle = isMe ? "#6ee7b7" : "#93c5fd";
+        ctx.fillStyle = player.avatarColor || DEFAULT_AVATAR_COLOR;
         ctx.fill();
         ctx.beginPath();
         ctx.arc(player.x, player.y, 27, 0, Math.PI * 2);
-        ctx.strokeStyle = isMe ? "#34d399" : "#60a5fa";
+        ctx.strokeStyle = player.avatarColor || DEFAULT_AVATAR_COLOR;
         ctx.globalAlpha = 0.5;
         ctx.stroke();
         ctx.globalAlpha = 1;
@@ -337,39 +477,233 @@ export default function App() {
         </div>
       </section>
 
-      <section className="world-card">
-        <div className="world-toolbar">
+      <form className="profile-panel" onSubmit={saveDisplayName}>
+        <div className="profile-heading">
           <div>
-            <span className="live-dot" />
-            <strong>Open World</strong>
-            <span className="world-subtitle"> · 2D proximity space</span>
+            <strong>Player profile</strong>
+            <p>Choose how others see you in the shared world.</p>
           </div>
-          <span className="coordinate-label">1000 × 600</span>
-        </div>
-        <div
-          ref={canvasWrapRef}
-          className="canvas-wrap"
-          tabIndex={0}
-          aria-label="Game world. Click here, then use WASD or arrow keys to move."
-          onClick={() => canvasWrapRef.current?.focus()}
-        >
-          <canvas
-            ref={canvasRef}
-            width={WORLD_WIDTH}
-            height={WORLD_HEIGHT}
-            className="world-canvas"
+          <span
+            className="avatar-preview"
+            style={{ backgroundColor: avatarColor }}
+            aria-hidden="true"
           />
         </div>
-        <div className="world-footer">
-          <div className="controls">
-            <span className="key">W</span>
-            <span className="key">A</span>
-            <span className="key">S</span>
-            <span className="key">D</span>
-            <span className="controls-label">or arrow keys to move</span>
-          </div>
-          <span className="footer-note">Multiplayer movement prototype</span>
+        <div className="profile-fields">
+          <label className="profile-name">
+            Display name
+            <input
+              type="text"
+              value={displayName}
+              maxLength={30}
+              placeholder="Enter your name"
+              onChange={(event) => setDisplayName(event.target.value)}
+            />
+          </label>
+          <label className="profile-color">
+            Avatar color
+            <span className="color-picker-wrap">
+              <input
+                type="color"
+                value={avatarColor}
+                disabled={!connected || savingColor}
+                onChange={updateAvatarColor}
+                aria-label="Choose avatar color"
+              />
+              <span>{avatarColor.toUpperCase()}</span>
+            </span>
+          </label>
+          <button type="submit" disabled={!connected || savingName}>
+            {savingName ? "Saving…" : "Save name"}
+          </button>
         </div>
+        {profileError && (
+          <p className="profile-error" role="alert">
+            {profileError}
+          </p>
+        )}
+      </form>
+
+      <div className="world-layout">
+        <section className="world-card">
+          <div className="world-toolbar">
+            <div>
+              <span className="live-dot" />
+              <strong>Open World</strong>
+              <span className="world-subtitle"> · 2D proximity space</span>
+            </div>
+            <span className="coordinate-label">1000 × 600</span>
+          </div>
+          <div
+            ref={canvasWrapRef}
+            className="canvas-wrap"
+            tabIndex={0}
+            aria-label="Game world. Click here, then use WASD or arrow keys to move."
+            onClick={() => canvasWrapRef.current?.focus()}
+          >
+            <canvas
+              ref={canvasRef}
+              width={WORLD_WIDTH}
+              height={WORLD_HEIGHT}
+              className="world-canvas"
+            />
+          </div>
+          <div className="world-footer">
+            <div className="controls">
+              <span className="key">W</span>
+              <span className="key">A</span>
+              <span className="key">S</span>
+              <span className="key">D</span>
+              <span className="controls-label">or arrow keys to move</span>
+            </div>
+            <span className="footer-note">Multiplayer movement prototype</span>
+          </div>
+        </section>
+
+        <aside className="chat-panel" aria-labelledby="chat-heading">
+          <div className="chat-header">
+            <div>
+              <strong id="chat-heading">World chat</strong>
+              <p>Messages are shared with everyone online</p>
+            </div>
+            <span className={`chat-status${connected ? " connected" : ""}`}>
+              {connected ? "Connected" : "Offline"}
+            </span>
+          </div>
+          <div
+            className="chat-log"
+            ref={chatLogRef}
+            role="log"
+            aria-live="polite"
+            aria-relevant="additions"
+            aria-label="World chat messages"
+          >
+            {chatMessages.length === 0 ? (
+              <p className="chat-empty">
+                No messages yet. Say hello to everyone in the world.
+              </p>
+            ) : (
+              chatMessages.map((message) => {
+                const sender =
+                  typeof message.name === "string" && message.name.trim()
+                    ? message.name.trim()
+                    : `Player ${message.senderId.slice(0, 4)}`;
+                const time = new Date(message.timestamp);
+                const timeLabel = Number.isNaN(time.getTime())
+                  ? ""
+                  : time.toLocaleTimeString([], {
+                      hour: "numeric",
+                      minute: "2-digit",
+                    });
+
+                return (
+                  <article className="chat-message" key={message.id}>
+                    <span
+                      className="chat-avatar"
+                      style={{
+                        backgroundColor:
+                          message.avatarColor || DEFAULT_AVATAR_COLOR,
+                      }}
+                      aria-hidden="true"
+                    />
+                    <div className="chat-message-content">
+                      <div className="chat-message-meta">
+                        <strong>{sender}</strong>
+                        <time dateTime={message.timestamp}>{timeLabel}</time>
+                      </div>
+                      <p>{message.text}</p>
+                    </div>
+                  </article>
+                );
+              })
+            )}
+          </div>
+          <form className="chat-compose" onSubmit={sendChatMessage}>
+            <label className="visually-hidden" htmlFor="chat-message-input">
+              Message
+            </label>
+            <textarea
+              id="chat-message-input"
+              value={chatInput}
+              maxLength={500}
+              rows={2}
+              placeholder="Write a message…"
+              disabled={!connected || sendingChat}
+              onChange={(event) => {
+                setChatInput(event.target.value);
+                if (chatError) setChatError("");
+              }}
+            />
+            <div className="chat-compose-footer">
+              <span>{chatInput.length}/500</span>
+              <button
+                type="submit"
+                disabled={!connected || sendingChat || !chatInput.trim()}
+              >
+                {sendingChat ? "Sending…" : "Send"}
+              </button>
+            </div>
+            {chatError && (
+              <p className="chat-error" role="alert">
+                {chatError}
+              </p>
+            )}
+          </form>
+        </aside>
+      </div>
+
+      <section className="people-panel" aria-labelledby="people-heading">
+        <div className="people-header">
+          <div>
+            <strong id="people-heading">People</strong>
+            <p>Players currently in this world</p>
+          </div>
+          <span className="people-count">
+            {players.length} online
+            {nearbyPlayers.length > 0 &&
+              ` · ${nearbyPlayers.length} nearby`}
+          </span>
+        </div>
+        {peopleList.length === 0 ? (
+          <p className="people-empty">No players are online yet.</p>
+        ) : (
+          <ul className="people-list">
+            {peopleList.map((player) => {
+              const isMe = player.id === socket?.id;
+              const name =
+                typeof player.name === "string" && player.name.trim()
+                  ? player.name.trim()
+                  : `Player ${player.id.slice(0, 4)}`;
+              const isNearby = !isMe && nearbyPlayerIds.has(player.id);
+
+              return (
+                <li className="people-item" key={player.id}>
+                  <span
+                    className="people-avatar"
+                    style={{
+                      backgroundColor:
+                        player.avatarColor || DEFAULT_AVATAR_COLOR,
+                    }}
+                    aria-hidden="true"
+                  />
+                  <span className="people-name">
+                    {name}
+                    {isMe && <span className="people-you">You</span>}
+                  </span>
+                  <span className="people-presence">
+                    <span className="online-indicator" />
+                    Online
+                  </span>
+                  <span
+                    className={`people-proximity${isNearby ? " nearby" : ""}`}
+                  >
+                    {isNearby ? "Nearby" : isMe ? "You" : "Not nearby"}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </section>
 
       <section className="nearby-panel">

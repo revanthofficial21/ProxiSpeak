@@ -30,6 +30,8 @@ const proximityState = new Map();
 const WORLD_WIDTH = 1000;
 const WORLD_HEIGHT = 600;
 const PLAYER_RADIUS = 20;
+const DEFAULT_AVATAR_COLOR = "#6ee7b7";
+const HEX_COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const SPAWN_SPACINGS = [80, 60, 40];
 const SPAWN_MARGIN = PLAYER_RADIUS + 20;
 const spawnSlots = new Map();
@@ -75,7 +77,13 @@ function allocateSpawnPosition() {
 }
 
 function publicPlayer(player) {
-  return { id: player.id, name: player.name, x: player.x, y: player.y };
+  return {
+    id: player.id,
+    name: player.name,
+    x: player.x,
+    y: player.y,
+    avatarColor: player.avatarColor || DEFAULT_AVATAR_COLOR,
+  };
 }
 
 function isNearby(firstId, secondId) {
@@ -128,6 +136,7 @@ io.on("connection", (socket) => {
     id: socket.id,
     socketId: socket.id,
     name: "",
+    avatarColor: DEFAULT_AVATAR_COLOR,
     ...spawnPosition,
   };
   players.set(socket.id, player);
@@ -140,6 +149,7 @@ io.on("connection", (socket) => {
         $set: {
           socketId: socket.id,
           name: player.name,
+          avatarColor: player.avatarColor,
           x: player.x,
           y: player.y,
           location: [player.x, player.y],
@@ -209,13 +219,13 @@ io.on("connection", (socket) => {
       return;
     }
 
-    currentPlayer.name = name.trim().slice(0, 30);
+    const updatedName = name.trim().slice(0, 30);
     try {
       const result = await db.collection("players").updateOne(
         { socketId: socket.id },
         {
           $set: {
-            name: currentPlayer.name,
+            name: updatedName,
             updatedAt: new Date(),
             connected: true,
           },
@@ -232,16 +242,116 @@ io.on("connection", (socket) => {
         return;
       }
 
-      players.set(socket.id, currentPlayer);
-      io.emit("player:renamed", currentPlayer);
+      const updatedPlayer = { ...currentPlayer, name: updatedName };
+      players.set(socket.id, updatedPlayer);
+      io.emit("player:renamed", publicPlayer(updatedPlayer));
       if (typeof callback === "function") {
-        callback({ success: true, name: currentPlayer.name });
+        callback({ success: true, name: updatedName });
       }
     } catch (error) {
       console.error("Failed to save player name:", error.message);
       if (typeof callback === "function") {
         callback({ success: false, error: error.message });
       }
+    }
+  });
+
+  socket.on("player:setAvatarColor", async (color, callback) => {
+    if (typeof color !== "string" || !HEX_COLOR_PATTERN.test(color)) {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "Invalid avatar color" });
+      }
+      return;
+    }
+
+    const currentPlayer = players.get(socket.id);
+    if (!currentPlayer) {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "Player not found" });
+      }
+      return;
+    }
+
+    try {
+      const result = await db.collection("players").updateOne(
+        { socketId: socket.id },
+        {
+          $set: {
+            avatarColor: color,
+            updatedAt: new Date(),
+            connected: true,
+          },
+        }
+      );
+
+      if (result.matchedCount === 0) {
+        if (typeof callback === "function") {
+          callback({
+            success: false,
+            error: "Player record not found in MongoDB",
+          });
+        }
+        return;
+      }
+
+      const updatedPlayer = { ...currentPlayer, avatarColor: color };
+      players.set(socket.id, updatedPlayer);
+      io.emit("player:avatarColorUpdated", publicPlayer(updatedPlayer));
+      if (typeof callback === "function") {
+        callback({ success: true, avatarColor: color });
+      }
+    } catch (error) {
+      console.error("Failed to save player avatar color:", error.message);
+      if (typeof callback === "function") {
+        callback({ success: false, error: error.message });
+      }
+    }
+  });
+
+  socket.on("chat:send", (messageText, callback) => {
+    if (typeof messageText !== "string") {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "Message must be text." });
+      }
+      return;
+    }
+
+    const text = messageText.trim();
+    if (!text) {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "Message cannot be empty." });
+      }
+      return;
+    }
+    if (text.length > 500) {
+      if (typeof callback === "function") {
+        callback({
+          success: false,
+          error: "Messages must be 500 characters or fewer.",
+        });
+      }
+      return;
+    }
+
+    const sender = players.get(socket.id);
+    if (!sender) {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "Player not found." });
+      }
+      return;
+    }
+
+    const chatMessage = {
+      id: `${socket.id}-${Date.now()}`,
+      senderId: socket.id,
+      name: sender.name,
+      avatarColor: sender.avatarColor || DEFAULT_AVATAR_COLOR,
+      text,
+      timestamp: new Date().toISOString(),
+    };
+    io.emit("chat:message", chatMessage);
+    if (typeof callback === "function") {
+      callback({ success: true, id: chatMessage.id });
     }
   });
 
@@ -276,6 +386,7 @@ io.on("connection", (socket) => {
         {
           $set: {
             name: updatedPlayer.name,
+            avatarColor: updatedPlayer.avatarColor || DEFAULT_AVATAR_COLOR,
             x: updatedPlayer.x,
             y: updatedPlayer.y,
             location: [updatedPlayer.x, updatedPlayer.y],
@@ -296,7 +407,14 @@ io.on("connection", (socket) => {
             $maxDistance: PROXIMITY_RADIUS,
           },
         })
-        .project({ _id: 0, socketId: 1, name: 1, x: 1, y: 1 })
+        .project({
+          _id: 0,
+          socketId: 1,
+          name: 1,
+          avatarColor: 1,
+          x: 1,
+          y: 1,
+        })
         .toArray();
 
       const nearbyList = nearbyPlayers
@@ -305,6 +423,7 @@ io.on("connection", (socket) => {
           id: nearbyPlayer.socketId,
           socketId: nearbyPlayer.socketId,
           name: nearbyPlayer.name,
+          avatarColor: nearbyPlayer.avatarColor || DEFAULT_AVATAR_COLOR,
           x: nearbyPlayer.x,
           y: nearbyPlayer.y,
         }));
