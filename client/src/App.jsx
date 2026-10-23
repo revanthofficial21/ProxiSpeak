@@ -136,6 +136,25 @@ export default function App() {
       nearbyRef.current = new Set(safeList.map((player) => player.id));
       setNearbyPlayers(safeList);
     });
+    // proximity:enter / proximity:leave are sent to BOTH players (unlike
+    // player:nearby, which only goes to whoever moved) — so a stationary
+    // player still learns when someone walks up to them.
+    client.on("proximity:enter", (peer) => {
+      if (!peer || typeof peer.id !== "string") return;
+      nearbyRef.current.add(peer.id);
+      setNearbyPlayers((current) =>
+        current.some((player) => player.id === peer.id)
+          ? current
+          : [...current, peer]
+      );
+    });
+    client.on("proximity:leave", (peerId) => {
+      if (typeof peerId !== "string") return;
+      nearbyRef.current.delete(peerId);
+      setNearbyPlayers((current) =>
+        current.filter((player) => player.id !== peerId)
+      );
+    });
     client.on("player:left", (playerId) => {
       if (typeof playerId !== "string") return;
       playersRef.current.delete(playerId);
