@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node proximity.test.js"
+    "test": "node proximity.test.js",
+    "audit": "node audit.js"
   },
   "keywords": [],
   "author": "",
@@ -20,6 +21,7 @@
     "socket.io": "^4.8.4"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.1.14",
+    "mongodb-memory-server": "^10.0.0"
   }
 }
