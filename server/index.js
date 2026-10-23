@@ -95,7 +95,7 @@ function relaySignal(event, fromId, toId, payload) {
   if (typeof toId !== "string" || toId === fromId) return;
   if (!isNearby(fromId, toId)) return;
 
-  io.to(toId).emit(event, { ...payload, from: fromId });
+  io.to(toId).emit(event, { ...payload, fromId });
 }
 
 io.on("connection", (socket) => {
@@ -142,21 +142,30 @@ io.on("connection", (socket) => {
 
   // WebRTC signaling — relayed only between players within proximity.
   socket.on("webrtc:offer", (data) => {
-    relaySignal("webrtc:offer", socket.id, data && data.to, {
-      sdp: data && data.sdp,
+    relaySignal("webrtc:offer", socket.id, data && data.targetId, {
+      offer: data && data.offer,
     });
   });
 
   socket.on("webrtc:answer", (data) => {
-    relaySignal("webrtc:answer", socket.id, data && data.to, {
-      sdp: data && data.sdp,
+    relaySignal("webrtc:answer", socket.id, data && data.targetId, {
+      answer: data && data.answer,
     });
   });
 
   socket.on("webrtc:ice", (data) => {
-    relaySignal("webrtc:ice", socket.id, data && data.to, {
+    relaySignal("webrtc:ice", socket.id, data && data.targetId, {
       candidate: data && data.candidate,
     });
+  });
+
+  // Handshake + teardown signals, relayed the same way.
+  socket.on("webrtc:ready", (data) => {
+    relaySignal("webrtc:ready", socket.id, data && data.targetId, {});
+  });
+
+  socket.on("webrtc:leave", (data) => {
+    relaySignal("webrtc:leave", socket.id, data && data.targetId, {});
   });
 
   // Save the player's name.

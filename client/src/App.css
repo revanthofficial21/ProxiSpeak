@@ -376,3 +376,63 @@ input {
 .audio-panel li {
   margin: 4px 0;
 }
+
+/* --- Name entry + mute (merged from Naseema) --- */
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.name-panel {
+  max-width: 720px;
+  margin: 0 auto 16px;
+  padding: 16px 20px;
+  border: 1px solid #263449;
+  border-radius: 12px;
+  background: #0f172a;
+  text-align: left;
+}
+
+.player-name-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.player-name-form label {
+  flex-basis: 100%;
+  font-size: 13px;
+  color: #cbd5e1;
+}
+
+.player-name-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #35445a;
+  border-radius: 8px;
+  background: #101827;
+  color: #e5edf8;
+}
+
+.player-name-form button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  background: #34d399;
+  color: #06281d;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.form-error {
+  margin: 8px 0 0;
+  color: #fca5a5;
+  font-size: 13px;
+}
+
+.audio-panel button + button {
+  margin-left: 8px;
+}
