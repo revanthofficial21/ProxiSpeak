@@ -199,6 +199,11 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
       return;
     }
 
+    // Create/resume the AudioContext synchronously, while we still hold the
+    // user gesture. Creating it after the getUserMedia await loses the
+    // gesture, so the browser leaves it suspended and audio stays silent.
+    ensureAudioContext();
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
@@ -206,7 +211,6 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
       });
 
       streamRef.current = stream;
-      ensureAudioContext();
       setVoiceEnabled(true);
       setVoiceStatus("Microphone enabled — waiting for nearby players");
 
@@ -426,13 +430,22 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
     let frame;
 
     const mix = () => {
+      const ctx = audioContextRef.current;
+
+      // If the browser suspended us (autoplay policy), try to resume.
+      if (ctx && ctx.state === "suspended") {
+        ctx.resume().catch(() => {});
+      }
+
       const positions = positionsRef?.current;
       const me = socket?.id;
 
-      if (positions && me && mixerRef.current.size > 0) {
+      if (ctx && positions && me && mixerRef.current.size > 0) {
         const local = positions.get(me);
 
         if (local) {
+          const now = ctx.currentTime;
+
           for (const [peerId, nodes] of mixerRef.current.entries()) {
             const peer = positions.get(peerId);
             if (!peer || !Number.isFinite(peer.x) || !Number.isFinite(peer.y)) {
@@ -444,15 +457,19 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
             const distance = Math.hypot(dx, dy);
 
             // Linear fall-off: full volume at 0px, silent at the radius edge.
-            nodes.gain.gain.value =
+            const targetGain =
               MAX_GAIN *
               Math.max(0, Math.min(1, 1 - distance / PROXIMITY_RADIUS));
 
+            // setTargetAtTime smooths the change, avoiding zipper clicks.
+            nodes.gain.gain.setTargetAtTime(targetGain, now, 0.05);
+
             if (nodes.panner) {
-              nodes.panner.pan.value = Math.max(
+              const targetPan = Math.max(
                 -1,
                 Math.min(1, dx / PROXIMITY_RADIUS)
               );
+              nodes.panner.pan.setTargetAtTime(targetPan, now, 0.05);
             }
           }
         }
