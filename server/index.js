@@ -95,7 +95,61 @@ function relaySignal(event, fromId, toId, payload) {
   if (typeof toId !== "string" || toId === fromId) return;
   if (!isNearby(fromId, toId)) return;
 
-  io.to(toId).emit(event, { ...payload, from: fromId });
+  io.to(toId).emit(event, { ...payload, fromId });
+}
+
+// Group a player by proximity: send them the nearby list and tell both sides
+// who just entered / left range. Run on connect and on every move.
+async function syncProximity(socketId, player) {
+  const nearbyPlayers = await db
+    .collection("players")
+    .find({
+      socketId: { $ne: socketId },
+      connected: true,
+      location: {
+        $near: [player.x, player.y],
+        $maxDistance: PROXIMITY_RADIUS,
+      },
+    })
+    .project({ _id: 0, socketId: 1, name: 1, x: 1, y: 1 })
+    .toArray();
+
+  const nearbyList = nearbyPlayers.map((nearbyPlayer) => ({
+    id: nearbyPlayer.socketId,
+    socketId: nearbyPlayer.socketId,
+    name: nearbyPlayer.name,
+    x: nearbyPlayer.x,
+    y: nearbyPlayer.y,
+  }));
+
+  io.to(socketId).emit("player:nearby", nearbyList);
+
+  const newNearby = new Set(nearbyList.map((p) => p.id));
+  const oldNearby = proximityState.get(socketId) || new Set();
+
+  for (const id of newNearby) {
+    if (oldNearby.has(id)) continue;
+
+    io.to(socketId).emit("proximity:enter", nearbyList.find((p) => p.id === id));
+    io.to(id).emit("proximity:enter", publicPlayer(player));
+
+    const peerSet = proximityState.get(id) || new Set();
+    peerSet.add(socketId);
+    proximityState.set(id, peerSet);
+  }
+
+  for (const id of oldNearby) {
+    if (newNearby.has(id)) continue;
+
+    io.to(socketId).emit("proximity:leave", id);
+    io.to(id).emit("proximity:leave", socketId);
+
+    const peerSet = proximityState.get(id);
+    if (peerSet) peerSet.delete(socketId);
+  }
+
+  proximityState.set(socketId, newNearby);
+  return nearbyList.length;
 }
 
 io.on("connection", (socket) => {
@@ -133,6 +187,7 @@ io.on("connection", (socket) => {
       },
       { upsert: true }
     )
+    .then(() => syncProximity(socket.id, player))
     .catch((error) => {
       console.error("Failed to save player:", error.message);
     });
@@ -142,21 +197,30 @@ io.on("connection", (socket) => {
 
   // WebRTC signaling — relayed only between players within proximity.
   socket.on("webrtc:offer", (data) => {
-    relaySignal("webrtc:offer", socket.id, data && data.to, {
-      sdp: data && data.sdp,
+    relaySignal("webrtc:offer", socket.id, data && data.targetId, {
+      offer: data && data.offer,
     });
   });
 
   socket.on("webrtc:answer", (data) => {
-    relaySignal("webrtc:answer", socket.id, data && data.to, {
-      sdp: data && data.sdp,
+    relaySignal("webrtc:answer", socket.id, data && data.targetId, {
+      answer: data && data.answer,
     });
   });
 
   socket.on("webrtc:ice", (data) => {
-    relaySignal("webrtc:ice", socket.id, data && data.to, {
+    relaySignal("webrtc:ice", socket.id, data && data.targetId, {
       candidate: data && data.candidate,
     });
+  });
+
+  // Handshake + teardown signals, relayed the same way.
+  socket.on("webrtc:ready", (data) => {
+    relaySignal("webrtc:ready", socket.id, data && data.targetId, {});
+  });
+
+  socket.on("webrtc:leave", (data) => {
+    relaySignal("webrtc:leave", socket.id, data && data.targetId, {});
   });
 
   // Save the player's name.
@@ -269,68 +333,14 @@ io.on("connection", (socket) => {
 
       io.emit("player:moved", updatedPlayer);
 
-      // Find connected players within 100 pixels.
-      const nearbyPlayers = await db
-        .collection("players")
-        .find({
-          socketId: { $ne: socket.id },
-          connected: true,
-          location: {
-            $near: [updatedPlayer.x, updatedPlayer.y],
-            $maxDistance: PROXIMITY_RADIUS,
-          },
-        })
-        .project({
-          _id: 0,
-          socketId: 1,
-          name: 1,
-          x: 1,
-          y: 1,
-        })
-        .toArray();
-
-      const nearbyList = nearbyPlayers.map((nearbyPlayer) => ({
-        id: nearbyPlayer.socketId,
-        socketId: nearbyPlayer.socketId,
-        name: nearbyPlayer.name,
-        x: nearbyPlayer.x,
-        y: nearbyPlayer.y,
-      }));
-
-      socket.emit("player:nearby", nearbyList);
-
-      // Proximity transitions: tell both sides who just entered / left range.
-      const newNearby = new Set(nearbyList.map((p) => p.id));
-      const oldNearby = proximityState.get(socket.id) || new Set();
-
-      for (const id of newNearby) {
-        if (oldNearby.has(id)) continue;
-
-        socket.emit("proximity:enter", nearbyList.find((p) => p.id === id));
-        io.to(id).emit("proximity:enter", publicPlayer(updatedPlayer));
-
-        const peerSet = proximityState.get(id) || new Set();
-        peerSet.add(socket.id);
-        proximityState.set(id, peerSet);
-      }
-
-      for (const id of oldNearby) {
-        if (newNearby.has(id)) continue;
-
-        socket.emit("proximity:leave", id);
-        io.to(id).emit("proximity:leave", socket.id);
-
-        const peerSet = proximityState.get(id);
-        if (peerSet) peerSet.delete(socket.id);
-      }
-
-      proximityState.set(socket.id, newNearby);
+      // Group users by proximity and report to both sides.
+      const nearbyCount = await syncProximity(socket.id, updatedPlayer);
 
       console.log(
         "Nearby players for",
         updatedPlayer.name || updatedPlayer.id,
         ":",
-        nearbyList.length
+        nearbyCount
       );
     } catch (error) {
       console.error(
