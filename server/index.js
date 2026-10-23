@@ -6,6 +6,12 @@ const cors = require("cors");
 const { Server } = require("socket.io");
 require("dotenv").config();
 const { MongoClient } = require("mongodb");
+const {
+  markPlayerConnected,
+  markPlayerDisconnected,
+  positionFields,
+  restoreReturningPlayer,
+} = require("./player-persistence");
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -114,28 +120,11 @@ io.on("connection", (socket) => {
   players.set(socket.id, player);
 
   // Save the player's initial position.
-  db.collection("players")
-    .updateOne(
-      { socketId: socket.id },
-      {
-        $set: {
-          socketId: socket.id,
-          name: player.name,
-          x: player.x,
-          y: player.y,
-          location: [player.x, player.y],
-          connected: true,
-          updatedAt: new Date(),
-        },
-        $setOnInsert: {
-          createdAt: new Date(),
-        },
-      },
-      { upsert: true }
-    )
-    .catch((error) => {
-      console.error("Failed to save player:", error.message);
-    });
+  const playerCollection = db.collection("players");
+  const initialPlayerSave = markPlayerConnected(playerCollection, player);
+  initialPlayerSave.catch((error) => {
+    console.error("Failed to save player:", error.message);
+  });
 
   socket.emit("world:state", Array.from(players.values()));
   socket.broadcast.emit("player:joined", player);
@@ -195,16 +184,50 @@ io.on("connection", (socket) => {
     currentPlayer.name = name.trim().slice(0, 30);
 
     try {
-      const result = await db.collection("players").updateOne(
-        { socketId: socket.id },
-        {
-          $set: {
-            name: currentPlayer.name,
-            updatedAt: new Date(),
-            connected: true,
-          },
-        }
-      );
+      await initialPlayerSave;
+
+      const session = mongoClient.startSession();
+      let returningPlayer;
+      try {
+        returningPlayer = await restoreReturningPlayer(
+          playerCollection,
+          currentPlayer.name,
+          socket.id,
+          session,
+          (savedPlayer) => ({
+            x: Math.max(
+              PLAYER_RADIUS,
+              Math.min(WORLD_WIDTH - PLAYER_RADIUS, savedPlayer.x)
+            ),
+            y: Math.max(
+              PLAYER_RADIUS,
+              Math.min(WORLD_HEIGHT - PLAYER_RADIUS, savedPlayer.y)
+            ),
+          })
+        );
+      } finally {
+        await session.endSession();
+      }
+
+      let result;
+      if (returningPlayer) {
+        currentPlayer.x = returningPlayer.x;
+        currentPlayer.y = returningPlayer.y;
+        spawnSlots.set(socket.id, { x: currentPlayer.x, y: currentPlayer.y });
+        result = { matchedCount: 1 };
+      } else {
+        result = await playerCollection.updateOne(
+          { socketId: socket.id },
+          {
+            $set: {
+              name: currentPlayer.name,
+              ...positionFields(currentPlayer.x, currentPlayer.y),
+              updatedAt: new Date(),
+              connected: true,
+            },
+          }
+        );
+      }
 
       console.log("Player name:", currentPlayer.name);
       console.log("MongoDB matched:", result.matchedCount);
@@ -267,9 +290,7 @@ io.on("connection", (socket) => {
         {
           $set: {
             name: updatedPlayer.name,
-            x: updatedPlayer.x,
-            y: updatedPlayer.y,
-            location: [updatedPlayer.x, updatedPlayer.y],
+            ...positionFields(updatedPlayer.x, updatedPlayer.y),
             connected: true,
             updatedAt: new Date(),
           },
@@ -355,16 +376,7 @@ io.on("connection", (socket) => {
       proximityState.delete(socket.id);
     }
 
-    db.collection("players")
-      .updateOne(
-        { socketId: socket.id },
-        {
-          $set: {
-            connected: false,
-            updatedAt: new Date(),
-          },
-        }
-      )
+    markPlayerDisconnected(db.collection("players"), socket.id)
       .catch((error) => {
         console.error(
           "Failed to update player status:",

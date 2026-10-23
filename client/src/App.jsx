@@ -8,8 +8,70 @@ const WORLD_HEIGHT = 600;
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "http://localhost:3000";
 const SPEED = 240;
 const AVATAR_RADIUS = 20;
+const AUDIO_PROXIMITY_RADIUS = 100;
+const MIN_REMOTE_VOLUME = 0.1;
+const VOLUME_SMOOTHING_SECONDS = 0.15;
 
 const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+
+function getRemoteVolume(localPlayer, remotePlayer) {
+  if (
+    !Number.isFinite(localPlayer?.x) ||
+    !Number.isFinite(localPlayer?.y) ||
+    !Number.isFinite(remotePlayer?.x) ||
+    !Number.isFinite(remotePlayer?.y)
+  ) {
+    return MIN_REMOTE_VOLUME;
+  }
+
+  const distance = Math.hypot(
+    localPlayer.x - remotePlayer.x,
+    localPlayer.y - remotePlayer.y
+  );
+  const proximity = Math.min(distance / AUDIO_PROXIMITY_RADIUS, 1);
+
+  return 1 - proximity * (1 - MIN_REMOTE_VOLUME);
+}
+
+function isAudioBeingReceived(audio) {
+  const tracks = audio?.srcObject?.getAudioTracks?.() || [];
+  return tracks.some((track) => track.readyState === "live" && !track.muted);
+}
+
+function withDistanceFromPlayer(player, localPlayer) {
+  const hasCoordinates =
+    Number.isFinite(player?.x) &&
+    Number.isFinite(player?.y) &&
+    Number.isFinite(localPlayer?.x) &&
+    Number.isFinite(localPlayer?.y);
+
+  return {
+    ...player,
+    distance: hasCoordinates
+      ? Math.round(Math.hypot(player.x - localPlayer.x, player.y - localPlayer.y))
+      : null,
+  };
+}
+
+function getDisplayCoordinate(value) {
+  return Number.isFinite(value) ? Math.round(value) : null;
+}
+
+function hasSameNearbyDisplay(currentPlayers, nextPlayers) {
+  return (
+    currentPlayers.length === nextPlayers.length &&
+    currentPlayers.every((player, index) => {
+      const nextPlayer = nextPlayers[index];
+      return (
+        player.id === nextPlayer.id &&
+        player.name === nextPlayer.name &&
+        player.distance === nextPlayer.distance &&
+        getDisplayCoordinate(player.x) === getDisplayCoordinate(nextPlayer.x) &&
+        getDisplayCoordinate(player.y) === getDisplayCoordinate(nextPlayer.y)
+      );
+    })
+  );
+}
 
 const obstacles = [
   { x: 100, y: 120, width: 120, height: 55 },
@@ -122,6 +184,12 @@ export default function App() {
 
     const audio = remoteAudioRef.current.get(peerId);
     if (audio) {
+      const tracks = audio.srcObject?.getAudioTracks?.() || [];
+      tracks.forEach((track) => {
+        track.onmute = null;
+        track.onunmute = null;
+        track.onended = null;
+      });
       audio.srcObject = null;
       remoteAudioRef.current.delete(peerId);
     }
@@ -156,26 +224,58 @@ export default function App() {
     };
 
     pc.ontrack = (event) => {
+      const stream = event.streams[0];
+      if (!stream) return;
+
       let audio = remoteAudioRef.current.get(peerId);
       if (!audio) {
         audio = new Audio();
         audio.autoplay = true;
+        audio.volume = MIN_REMOTE_VOLUME;
         remoteAudioRef.current.set(peerId, audio);
       }
-      audio.srcObject = event.streams[0];
+      const refreshPeerStatus = () => {
+        setPeerStates((current) => ({
+          ...current,
+          [peerId]: {
+            connectionState:
+              peersRef.current.get(peerId)?.connectionState ||
+              current[peerId]?.connectionState ||
+              "closed",
+            receivingAudio: isAudioBeingReceived(audio),
+          },
+        }));
+      };
+      stream.getAudioTracks().forEach((track) => {
+        track.onmute = refreshPeerStatus;
+        track.onunmute = refreshPeerStatus;
+        track.onended = refreshPeerStatus;
+      });
+      audio.srcObject = stream;
       audio.play().catch((error) => {
         console.warn("Remote audio playback needs user interaction:", error);
       });
+      refreshPeerStatus();
     };
 
     pc.onconnectionstatechange = () => {
       setPeerStates((current) => ({
         ...current,
-        [peerId]: pc.connectionState,
+        [peerId]: {
+          connectionState: pc.connectionState,
+          receivingAudio: current[peerId]?.receivingAudio || false,
+        },
       }));
     };
 
     peersRef.current.set(peerId, pc);
+    setPeerStates((current) => ({
+      ...current,
+      [peerId]: {
+        connectionState: pc.connectionState,
+        receivingAudio: current[peerId]?.receivingAudio || false,
+      },
+    }));
 
     // The peer with the lower id offers, so both sides agree who initiates.
     if (initiator) {
@@ -386,6 +486,10 @@ export default function App() {
       setNearbyPlayers([]);
       nearbyRef.current = new Set();
       playersRef.current.clear();
+      for (const peerId of peersRef.current.keys()) closePeer(peerId);
+      pendingPeersRef.current.clear();
+      pendingOffersRef.current.clear();
+      pendingCandidatesRef.current.clear();
       updatePlayerCount();
     });
 
@@ -413,15 +517,35 @@ export default function App() {
       }
 
       playersRef.current.set(player.id, player);
+      if (nearbyRef.current.has(player.id)) {
+        const updatedNearbyPlayer = withDistanceFromPlayer(
+          player,
+          playersRef.current.get(socket.id)
+        );
+        setNearbyPlayers((current) => {
+          const index = current.findIndex(
+            (nearbyPlayer) => nearbyPlayer.id === player.id
+          );
+          if (index === -1) return current;
+
+          const next = [...current];
+          next[index] = updatedNearbyPlayer;
+          return hasSameNearbyDisplay(current, next) ? current : next;
+        });
+      }
       updatePlayerCount();
     });
 
     socket.on("player:renamed", (player) => {
       if (!player || typeof player.id !== "string") return;
       playersRef.current.set(player.id, player);
+      const updatedPlayer = withDistanceFromPlayer(
+        player,
+        playersRef.current.get(socket.id)
+      );
       setNearbyPlayers((current) =>
         current.map((nearbyPlayer) =>
-          nearbyPlayer.id === player.id ? player : nearbyPlayer
+          nearbyPlayer.id === player.id ? updatedPlayer : nearbyPlayer
         )
       );
     });
@@ -436,8 +560,16 @@ export default function App() {
               Number.isFinite(p.y)
           )
         : [];
+      const localPlayer = playersRef.current.get(socket.id);
+      const nextNearbyPlayers = safe.map((player) =>
+        withDistanceFromPlayer(player, localPlayer)
+      );
       nearbyRef.current = new Set(safe.map((p) => p.id));
-      setNearbyPlayers(safe);
+      setNearbyPlayers((current) =>
+        hasSameNearbyDisplay(current, nextNearbyPlayers)
+          ? current
+          : nextNearbyPlayers
+      );
     });
 
     socket.on("player:left", (id) => {
@@ -454,6 +586,20 @@ export default function App() {
     socket.on("proximity:enter", (peer) => {
       if (!peer || typeof peer.id !== "string") return;
 
+      playersRef.current.set(peer.id, peer);
+      nearbyRef.current.add(peer.id);
+      const nextNearbyPlayer = withDistanceFromPlayer(
+        peer,
+        playersRef.current.get(socket.id)
+      );
+      setNearbyPlayers((current) =>
+        current.some((nearbyPlayer) => nearbyPlayer.id === peer.id)
+          ? current.map((nearbyPlayer) =>
+              nearbyPlayer.id === peer.id ? nextNearbyPlayer : nearbyPlayer
+            )
+          : [...current, nextNearbyPlayer]
+      );
+
       if (!audioEnabledRef.current) {
         pendingPeersRef.current.add(peer.id);
         return;
@@ -464,6 +610,10 @@ export default function App() {
 
     socket.on("proximity:leave", (peerId) => {
       if (typeof peerId !== "string") return;
+      nearbyRef.current.delete(peerId);
+      setNearbyPlayers((current) =>
+        current.filter((nearbyPlayer) => nearbyPlayer.id !== peerId)
+      );
       pendingPeersRef.current.delete(peerId);
       closePeer(peerId);
     });
@@ -602,6 +752,23 @@ export default function App() {
         }
       }
 
+      for (const [peerId, audio] of remoteAudioRef.current) {
+        const peer = peersRef.current.get(peerId);
+        if (
+          !current ||
+          !peer ||
+          ["closed", "failed", "disconnected"].includes(peer.connectionState)
+        ) {
+          audio.volume = MIN_REMOTE_VOLUME;
+          continue;
+        }
+
+        const targetVolume = getRemoteVolume(current, players.get(peerId));
+        const smoothing = 1 - Math.exp(-deltaTime / VOLUME_SMOOTHING_SECONDS);
+        audio.volume += (targetVolume - audio.volume) * smoothing;
+        audio.volume = Math.max(0, Math.min(audio.volume, 1));
+      }
+
       // Background
       ctx.clearRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
       ctx.fillStyle = "#101827";
@@ -669,7 +836,7 @@ export default function App() {
       animationId = requestAnimationFrame(draw);
     }
 
-    draw();
+    draw(performance.now());
 
     return () => {
       cancelAnimationFrame(animationId);
@@ -791,7 +958,7 @@ export default function App() {
           <ul>
             {Object.entries(peerStates).map(([id, state]) => (
               <li key={id}>
-                {`Player ${id.slice(0, 4)}`} — {state}
+                {`Player ${id.slice(0, 4)}`} — {state.connectionState}
               </li>
             ))}
           </ul>
@@ -806,12 +973,61 @@ export default function App() {
           <p>No one nearby yet — move closer to another avatar.</p>
         ) : (
           <ul>
-            {nearbyPlayers.map((player) => (
-              <li key={player.id}>
-                {player.name || `Player ${player.id.slice(0, 4)}`} — X:{" "}
-                {Math.round(player.x)}, Y: {Math.round(player.y)}
-              </li>
-            ))}
+            {nearbyPlayers.map((player) => {
+              const connectionState =
+                peerStates[player.id]?.connectionState;
+              const voiceStatus =
+                connectionState === "connected"
+                  ? "Connected"
+                  : connectionState === "new" ||
+                      connectionState === "connecting"
+                    ? "Connecting"
+                    : "Disconnected";
+              const isReceivingAudio =
+                peerStates[player.id]?.receivingAudio || false;
+
+              return (
+                <li className="nearby-player" key={player.id}>
+                  <div className="nearby-player-heading">
+                    <div className="nearby-player-identity">
+                      <strong className="nearby-player-name">
+                        {player.name || `Player ${player.id.slice(0, 4)}`}
+                      </strong>
+                      <span className="nearby-player-distance">
+                        {Number.isFinite(player.distance)
+                          ? `${player.distance} px`
+                          : "Distance unavailable"}
+                      </span>
+                    </div>
+                    <span
+                      className={`voice-status voice-status-${voiceStatus.toLowerCase()}`}
+                      aria-label={`Voice connection ${voiceStatus.toLowerCase()}`}
+                    >
+                      <span className="voice-status-dot" aria-hidden="true" />
+                      {voiceStatus}
+                    </span>
+                  </div>
+                  <div className="nearby-player-details">
+                    <span
+                      className={
+                        isReceivingAudio
+                          ? "audio-receiving"
+                          : "audio-not-receiving"
+                      }
+                      aria-live="polite"
+                    >
+                      {isReceivingAudio
+                        ? "Microphone audio receiving"
+                        : "No microphone audio"}
+                    </span>
+                    <span className="nearby-player-coordinates">
+                      X: {getDisplayCoordinate(player.x) ?? "—"}, Y:{" "}
+                      {getDisplayCoordinate(player.y) ?? "—"}
+                    </span>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>

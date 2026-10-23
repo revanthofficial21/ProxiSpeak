@@ -345,6 +345,101 @@ button:disabled {
   margin: 4px 0;
 }
 
+.nearby-panel .nearby-player {
+  margin: 0;
+  padding: 11px 0;
+  border-top: 1px solid #263449;
+  list-style: none;
+}
+
+.nearby-player-heading,
+.nearby-player-details {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.nearby-player-identity {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 5px 9px;
+}
+
+.nearby-panel .nearby-player-name {
+  display: inline;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #e5edf8;
+}
+
+.nearby-player-distance {
+  flex: 0 0 auto;
+  color: #aab8cb;
+  font-size: 12px;
+}
+
+.voice-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.voice-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.voice-status-connected {
+  color: #6ee7b7;
+}
+
+.voice-status-connected .voice-status-dot {
+  background: #6ee7b7;
+  box-shadow: 0 0 8px #6ee7b755;
+}
+
+.voice-status-connecting {
+  color: #fbbf24;
+}
+
+.voice-status-connecting .voice-status-dot {
+  background: #fbbf24;
+}
+
+.voice-status-disconnected {
+  color: #94a3b8;
+}
+
+.voice-status-disconnected .voice-status-dot {
+  background: #64748b;
+}
+
+.nearby-player-details {
+  margin-top: 5px;
+  color: #8190a6;
+  font-size: 11px;
+}
+
+.audio-receiving {
+  color: #6ee7b7;
+}
+
+.audio-not-receiving {
+  color: #94a3b8;
+}
+
+.nearby-player-coordinates {
+  flex: 0 0 auto;
+}
+
 .audio-panel {
   max-width: 720px;
   margin: 0 auto 16px;
