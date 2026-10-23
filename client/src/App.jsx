@@ -83,7 +83,7 @@ export default function App() {
     enableVoice,
     disableVoice,
     toggleMute,
-  } = useVoiceChat(socket, nearbyPlayers);
+  } = useVoiceChat(socket, nearbyPlayers, playersRef);
 
   useEffect(() => {
     const client = io(SERVER_URL);

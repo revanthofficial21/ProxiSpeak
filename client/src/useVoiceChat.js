@@ -5,7 +5,11 @@ const ICE_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
 ];
 
-export default function useVoiceChat(socket, nearbyPlayers) {
+// Spatial audio: peers fade out with distance and pan by relative position.
+const PROXIMITY_RADIUS = 100;
+const MAX_GAIN = 1;
+
+export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("Voice chat disabled");
   const [peerStates, setPeerStates] = useState({});
@@ -15,8 +19,77 @@ export default function useVoiceChat(socket, nearbyPlayers) {
   const peersRef = useRef(new Map());
   const nearbyRef = useRef(nearbyPlayers);
   const pendingCandidatesRef = useRef(new Map());
+  const audioContextRef = useRef(null);
+  const mixerRef = useRef(new Map()); // peerId -> { source, gain, panner }
 
   nearbyRef.current = nearbyPlayers;
+
+  // Create (and resume) the shared AudioContext. Browsers start it suspended,
+  // so this is called from the enableVoice click (a user gesture).
+  const ensureAudioContext = useCallback(() => {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+
+    if (!audioContextRef.current) {
+      audioContextRef.current = new Ctx();
+    }
+    if (audioContextRef.current.state === "suspended") {
+      audioContextRef.current.resume().catch(() => {});
+    }
+    return audioContextRef.current;
+  }, []);
+
+  const detachMixer = useCallback((peerId) => {
+    const nodes = mixerRef.current.get(peerId);
+    if (!nodes) return;
+
+    try {
+      nodes.source.disconnect();
+    } catch (error) {
+      // already disconnected
+    }
+    try {
+      nodes.gain.disconnect();
+    } catch (error) {
+      // already disconnected
+    }
+    if (nodes.panner) {
+      try {
+        nodes.panner.disconnect();
+      } catch (error) {
+        // already disconnected
+      }
+    }
+    mixerRef.current.delete(peerId);
+  }, []);
+
+  // Route a remote stream through gain -> stereo panner -> speakers.
+  const attachRemoteStream = useCallback(
+    (peerId, stream) => {
+      const ctx = ensureAudioContext();
+      if (!ctx) return;
+
+      detachMixer(peerId);
+
+      const source = ctx.createMediaStreamSource(stream);
+      const gain = ctx.createGain();
+      gain.gain.value = 0; // silent until the mixer sets it by distance
+
+      source.connect(gain);
+
+      let panner = null;
+      if (typeof ctx.createStereoPanner === "function") {
+        panner = ctx.createStereoPanner();
+        gain.connect(panner);
+        panner.connect(ctx.destination);
+      } else {
+        gain.connect(ctx.destination);
+      }
+
+      mixerRef.current.set(peerId, { source, gain, panner });
+    },
+    [ensureAudioContext, detachMixer]
+  );
 
   const closePeer = useCallback(
     (peerId, notify = false, preserveCandidates = false) => {
@@ -28,10 +101,10 @@ export default function useVoiceChat(socket, nearbyPlayers) {
         entry.pc.onicecandidate = null;
         entry.pc.onconnectionstatechange = null;
         entry.pc.close();
-        entry.audio.pause();
-        entry.audio.srcObject = null;
         peersRef.current.delete(peerId);
       }
+
+      detachMixer(peerId);
 
       setPeerStates((current) => {
         if (!(peerId in current)) return current;
@@ -44,7 +117,7 @@ export default function useVoiceChat(socket, nearbyPlayers) {
         socket.emit("webrtc:leave", { targetId: peerId });
       }
     },
-    [socket]
+    [socket, detachMixer]
   );
 
   const flushCandidates = useCallback(async (peerId, pc) => {
@@ -74,9 +147,6 @@ export default function useVoiceChat(socket, nearbyPlayers) {
     if (current && current.pc.connectionState !== "closed") return;
 
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-    const audio = new Audio();
-    audio.autoplay = true;
-    audio.playsInline = true;
 
     streamRef.current.getTracks().forEach((track) => {
       pc.addTrack(track, streamRef.current);
@@ -92,10 +162,8 @@ export default function useVoiceChat(socket, nearbyPlayers) {
     };
 
     pc.ontrack = (event) => {
-      audio.srcObject = event.streams[0];
-      audio.play().catch(() => {
-        setVoiceStatus("Voice connected — click to allow audio");
-      });
+      attachRemoteStream(peerId, event.streams[0]);
+      setVoiceStatus("Voice connected");
     };
 
     pc.onconnectionstatechange = () => {
@@ -108,7 +176,7 @@ export default function useVoiceChat(socket, nearbyPlayers) {
       }
     };
 
-    peersRef.current.set(peerId, { pc, audio });
+    peersRef.current.set(peerId, { pc });
     setPeerStates((current) => ({ ...current, [peerId]: pc.connectionState }));
 
     try {
@@ -123,7 +191,7 @@ export default function useVoiceChat(socket, nearbyPlayers) {
       console.error("Could not create voice offer:", error);
       closePeer(peerId);
     }
-  }, [socket, closePeer]);
+  }, [socket, closePeer, attachRemoteStream]);
 
   const enableVoice = useCallback(async () => {
     if (!socket?.connected) {
@@ -138,6 +206,7 @@ export default function useVoiceChat(socket, nearbyPlayers) {
       });
 
       streamRef.current = stream;
+      ensureAudioContext();
       setVoiceEnabled(true);
       setVoiceStatus("Microphone enabled — waiting for nearby players");
 
@@ -156,7 +225,7 @@ export default function useVoiceChat(socket, nearbyPlayers) {
           : "Could not access microphone"
       );
     }
-  }, [socket, createOffer]);
+  }, [socket, createOffer, ensureAudioContext]);
 
   const disableVoice = useCallback(() => {
     for (const peerId of peersRef.current.keys()) {
@@ -193,9 +262,6 @@ export default function useVoiceChat(socket, nearbyPlayers) {
       closePeer(fromId, false, true);
 
       const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-      const audio = new Audio();
-      audio.autoplay = true;
-      audio.playsInline = true;
 
       streamRef.current.getTracks().forEach((track) => {
         pc.addTrack(track, streamRef.current);
@@ -211,10 +277,8 @@ export default function useVoiceChat(socket, nearbyPlayers) {
       };
 
       pc.ontrack = (event) => {
-        audio.srcObject = event.streams[0];
-        audio.play().catch(() => {
-          setVoiceStatus("Voice connected — click to allow audio");
-        });
+        attachRemoteStream(fromId, event.streams[0]);
+        setVoiceStatus("Voice connected");
       };
 
       pc.onconnectionstatechange = () => {
@@ -227,7 +291,7 @@ export default function useVoiceChat(socket, nearbyPlayers) {
         }
       };
 
-      peersRef.current.set(fromId, { pc, audio });
+      peersRef.current.set(fromId, { pc });
       setPeerStates((current) => ({
         ...current,
         [fromId]: pc.connectionState,
@@ -295,7 +359,7 @@ export default function useVoiceChat(socket, nearbyPlayers) {
       socket.off("webrtc:ice", onCandidate);
       socket.off("webrtc:leave", onLeave);
     };
-  }, [socket, closePeer, createOffer, flushCandidates]);
+  }, [socket, closePeer, createOffer, flushCandidates, attachRemoteStream]);
 
   useEffect(() => {
     const nearbyIds = new Set(nearbyPlayers.map((player) => player.id));
@@ -354,6 +418,52 @@ export default function useVoiceChat(socket, nearbyPlayers) {
     });
     setMuted(nextMuted);
   }, [muted]);
+
+  // Spatial mixer: every frame, set each peer's gain and stereo pan from the
+  // live avatar positions — volume falls off with distance, pan follows the
+  // peer's left/right offset from the local player.
+  useEffect(() => {
+    let frame;
+
+    const mix = () => {
+      const positions = positionsRef?.current;
+      const me = socket?.id;
+
+      if (positions && me && mixerRef.current.size > 0) {
+        const local = positions.get(me);
+
+        if (local) {
+          for (const [peerId, nodes] of mixerRef.current.entries()) {
+            const peer = positions.get(peerId);
+            if (!peer || !Number.isFinite(peer.x) || !Number.isFinite(peer.y)) {
+              continue;
+            }
+
+            const dx = peer.x - local.x;
+            const dy = peer.y - local.y;
+            const distance = Math.hypot(dx, dy);
+
+            // Linear fall-off: full volume at 0px, silent at the radius edge.
+            nodes.gain.gain.value =
+              MAX_GAIN *
+              Math.max(0, Math.min(1, 1 - distance / PROXIMITY_RADIUS));
+
+            if (nodes.panner) {
+              nodes.panner.pan.value = Math.max(
+                -1,
+                Math.min(1, dx / PROXIMITY_RADIUS)
+              );
+            }
+          }
+        }
+      }
+
+      frame = requestAnimationFrame(mix);
+    };
+
+    frame = requestAnimationFrame(mix);
+    return () => cancelAnimationFrame(frame);
+  }, [socket, positionsRef]);
 
   return {
     voiceEnabled,
