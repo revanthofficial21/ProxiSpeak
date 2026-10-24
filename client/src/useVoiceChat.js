@@ -22,7 +22,9 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
   const audioContextRef = useRef(null);
   const mixerRef = useRef(new Map()); // peerId -> { source, gain, panner }
 
-  nearbyRef.current = nearbyPlayers;
+  useEffect(() => {
+    nearbyRef.current = nearbyPlayers;
+  }, [nearbyPlayers]);
 
   // Create (and resume) the shared AudioContext. Browsers start it suspended,
   // so this is called from the enableVoice click (a user gesture).
@@ -249,6 +251,11 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
 
     const onReady = ({ fromId } = {}) => {
       if (!fromId || !streamRef.current || socket.id > fromId) return;
+
+      // Already connected? Don't tear it down and renegotiate.
+      const existing = peersRef.current.get(fromId);
+      if (existing && existing.pc.connectionState === "connected") return;
+
       closePeer(fromId);
       createOffer(fromId);
     };

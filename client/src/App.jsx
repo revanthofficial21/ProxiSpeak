@@ -74,6 +74,7 @@ export default function App() {
   const [players, setPlayers] = useState([]);
   const [nearbyPlayers, setNearbyPlayers] = useState([]);
   const [playerName, setPlayerName] = useState("");
+  const [savedName, setSavedName] = useState("");
   const [nameError, setNameError] = useState("");
   const {
     voiceEnabled,
@@ -120,7 +121,15 @@ export default function App() {
     });
     client.on("player:renamed", (player) => {
       if (!player || typeof player.id !== "string") return;
-      playersRef.current.set(player.id, player);
+      const existing = playersRef.current.get(player.id);
+
+      if (player.id === client.id && existing) {
+        // Keep our own live position — only take the new name from the server.
+        playersRef.current.set(player.id, { ...existing, name: player.name });
+      } else {
+        playersRef.current.set(player.id, player);
+      }
+
       setPlayers(Array.from(playersRef.current.values()));
     });
     client.on("player:nearby", (list) => {
@@ -348,6 +357,7 @@ export default function App() {
         setNameError(response?.error || "Could not save your name.");
         return;
       }
+      setSavedName(response.name || name);
       setNameError("");
     });
   };
@@ -387,7 +397,7 @@ export default function App() {
       <section className="name-panel">
         <form className="player-name-form" onSubmit={handleSetName}>
           <label htmlFor="player-name">
-            {playerName ? `You are "${playerName}"` : "Set your display name"}
+            {savedName ? `You are "${savedName}"` : "Set your display name"}
           </label>
           <input
             id="player-name"

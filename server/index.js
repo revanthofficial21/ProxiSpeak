@@ -330,6 +330,9 @@ io.on("connection", (socket) => {
     players.set(socket.id, updatedPlayer);
 
     try {
+      // upsert: if the connect-time insert hasn't landed yet (or the record was
+      // removed), still persist the move — otherwise the player vanishes from
+      // $near and nobody can detect them.
       await db.collection("players").updateOne(
         { socketId: socket.id },
         {
@@ -341,7 +344,11 @@ io.on("connection", (socket) => {
             connected: true,
             updatedAt: new Date(),
           },
-        }
+          $setOnInsert: {
+            createdAt: new Date(),
+          },
+        },
+        { upsert: true }
       );
 
       io.emit("player:moved", updatedPlayer);
