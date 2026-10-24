@@ -22,7 +22,76 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
   const audioContextRef = useRef(null);
   const mixerRef = useRef(new Map()); // peerId -> { source, gain, panner }
 
-  nearbyRef.current = nearbyPlayers;
+  useEffect(() => {
+    nearbyRef.current = nearbyPlayers;
+  }, [nearbyPlayers]);
+
+  // Create (and resume) the shared AudioContext. Browsers start it suspended,
+  // so this is called from the enableVoice click (a user gesture).
+  const ensureAudioContext = useCallback(() => {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+
+    if (!audioContextRef.current) {
+      audioContextRef.current = new Ctx();
+    }
+    if (audioContextRef.current.state === "suspended") {
+      audioContextRef.current.resume().catch(() => {});
+    }
+    return audioContextRef.current;
+  }, []);
+
+  const detachMixer = useCallback((peerId) => {
+    const nodes = mixerRef.current.get(peerId);
+    if (!nodes) return;
+
+    try {
+      nodes.source.disconnect();
+    } catch (error) {
+      // already disconnected
+    }
+    try {
+      nodes.gain.disconnect();
+    } catch (error) {
+      // already disconnected
+    }
+    if (nodes.panner) {
+      try {
+        nodes.panner.disconnect();
+      } catch (error) {
+        // already disconnected
+      }
+    }
+    mixerRef.current.delete(peerId);
+  }, []);
+
+  // Route a remote stream through gain -> stereo panner -> speakers.
+  const attachRemoteStream = useCallback(
+    (peerId, stream) => {
+      const ctx = ensureAudioContext();
+      if (!ctx) return;
+
+      detachMixer(peerId);
+
+      const source = ctx.createMediaStreamSource(stream);
+      const gain = ctx.createGain();
+      gain.gain.value = 0; // silent until the mixer sets it by distance
+
+      source.connect(gain);
+
+      let panner = null;
+      if (typeof ctx.createStereoPanner === "function") {
+        panner = ctx.createStereoPanner();
+        gain.connect(panner);
+        panner.connect(ctx.destination);
+      } else {
+        gain.connect(ctx.destination);
+      }
+
+      mixerRef.current.set(peerId, { source, gain, panner });
+    },
+    [ensureAudioContext, detachMixer]
+  );
 
   // Create (and resume) the shared AudioContext. Browsers start it suspended,
   // so this is called from the enableVoice click (a user gesture).
@@ -249,6 +318,11 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
 
     const onReady = ({ fromId } = {}) => {
       if (!fromId || !streamRef.current || socket.id > fromId) return;
+
+      // Already connected? Don't tear it down and renegotiate.
+      const existing = peersRef.current.get(fromId);
+      if (existing && existing.pc.connectionState === "connected") return;
+
       closePeer(fromId);
       createOffer(fromId);
     };

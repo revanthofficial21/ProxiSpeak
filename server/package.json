@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node proximity.test.js",
+    "test": "node tests/proximity.test.js && node tests/player-persistence.test.js",
     "audit": "node audit.js"
   },
   "keywords": [],
