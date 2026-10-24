@@ -104,6 +104,59 @@ function relaySignal(event, fromId, toId, payload) {
   io.to(toId).emit(event, { ...payload, from: fromId });
 }
 
+// Group a player by proximity: send them the nearby list and tell both sides
+// who just entered / left range. Run on connect and on every move.
+async function syncProximity(socketId, player) {
+  const nearbyPlayers = await db
+    .collection("players")
+    .find({
+      socketId: { $ne: socketId },
+      connected: true,
+      location: {
+        $near: [player.x, player.y],
+        $maxDistance: PROXIMITY_RADIUS,
+      },
+    })
+    .project({ _id: 0, socketId: 1, name: 1, x: 1, y: 1 })
+    .toArray();
+
+  const nearbyList = nearbyPlayers.map((nearbyPlayer) => ({
+    id: nearbyPlayer.socketId,
+    socketId: nearbyPlayer.socketId,
+    name: nearbyPlayer.name,
+    x: nearbyPlayer.x,
+    y: nearbyPlayer.y,
+  }));
+
+  io.to(socketId).emit("player:nearby", nearbyList);
+
+  const newNearby = new Set(nearbyList.map((nearbyPlayer) => nearbyPlayer.id));
+  const oldNearby = proximityState.get(socketId) || new Set();
+
+  for (const peerId of newNearby) {
+    if (oldNearby.has(peerId)) continue;
+
+    const nearbyPlayer = nearbyList.find((candidate) => candidate.id === peerId);
+    io.to(socketId).emit("proximity:enter", nearbyPlayer);
+    io.to(peerId).emit("proximity:enter", publicPlayer(player));
+
+    const peerSet = proximityState.get(peerId) || new Set();
+    peerSet.add(socketId);
+    proximityState.set(peerId, peerSet);
+  }
+
+  for (const peerId of oldNearby) {
+    if (newNearby.has(peerId)) continue;
+
+    io.to(socketId).emit("proximity:leave", peerId);
+    io.to(peerId).emit("proximity:leave", socketId);
+    proximityState.get(peerId)?.delete(socketId);
+  }
+
+  proximityState.set(socketId, newNearby);
+  return nearbyList.length;
+}
+
 io.on("connection", (socket) => {
   console.log(`Player connected: ${socket.id}`);
 
@@ -122,9 +175,11 @@ io.on("connection", (socket) => {
   // Save the player's initial position.
   const playerCollection = db.collection("players");
   const initialPlayerSave = markPlayerConnected(playerCollection, player);
-  initialPlayerSave.catch((error) => {
-    console.error("Failed to save player:", error.message);
-  });
+  initialPlayerSave
+    .then(() => syncProximity(socket.id, player))
+    .catch((error) => {
+      console.error("Failed to save player:", error.message);
+    });
 
   socket.emit("world:state", Array.from(players.values()));
   socket.broadcast.emit("player:joined", player);
@@ -186,28 +241,24 @@ io.on("connection", (socket) => {
     try {
       await initialPlayerSave;
 
-      const session = mongoClient.startSession();
-      let returningPlayer;
-      try {
-        returningPlayer = await restoreReturningPlayer(
-          playerCollection,
-          currentPlayer.name,
-          socket.id,
-          session,
-          (savedPlayer) => ({
-            x: Math.max(
-              PLAYER_RADIUS,
-              Math.min(WORLD_WIDTH - PLAYER_RADIUS, savedPlayer.x)
-            ),
-            y: Math.max(
-              PLAYER_RADIUS,
-              Math.min(WORLD_HEIGHT - PLAYER_RADIUS, savedPlayer.y)
-            ),
-          })
-        );
-      } finally {
-        await session.endSession();
-      }
+      // No session/transaction: a single-document claim is atomic on its own,
+      // so this works on a standalone MongoDB too (transactions need a replica
+      // set).
+      const returningPlayer = await restoreReturningPlayer(
+        playerCollection,
+        currentPlayer.name,
+        socket.id,
+        (savedPlayer) => ({
+          x: Math.max(
+            PLAYER_RADIUS,
+            Math.min(WORLD_WIDTH - PLAYER_RADIUS, savedPlayer.x)
+          ),
+          y: Math.max(
+            PLAYER_RADIUS,
+            Math.min(WORLD_HEIGHT - PLAYER_RADIUS, savedPlayer.y)
+          ),
+        })
+      );
 
       let result;
       if (returningPlayer) {
@@ -299,59 +350,15 @@ io.on("connection", (socket) => {
 
       io.emit("player:moved", updatedPlayer);
 
-      const nearbyPlayers = await db
-        .collection("players")
-        .find({
-          socketId: { $ne: socket.id },
-          connected: true,
-          location: {
-            $near: [updatedPlayer.x, updatedPlayer.y],
-            $maxDistance: PROXIMITY_RADIUS,
-          },
-        })
-        .project({
-          _id: 0,
-          socketId: 1,
-          name: 1,
-          x: 1,
-          y: 1,
-        })
-        .toArray();
+      // Group users by proximity and report to both sides.
+      const nearbyCount = await syncProximity(socket.id, updatedPlayer);
 
-      const nearbyList = nearbyPlayers.map((nearbyPlayer) => ({
-        id: nearbyPlayer.socketId,
-        socketId: nearbyPlayer.socketId,
-        name: nearbyPlayer.name,
-        x: nearbyPlayer.x,
-        y: nearbyPlayer.y,
-      }));
-
-      socket.emit("player:nearby", nearbyList);
-
-      const newNearby = new Set(nearbyList.map((nearbyPlayer) => nearbyPlayer.id));
-      const oldNearby = proximityState.get(socket.id) || new Set();
-
-      for (const peerId of newNearby) {
-        if (oldNearby.has(peerId)) continue;
-
-        const nearbyPlayer = nearbyList.find((candidate) => candidate.id === peerId);
-        socket.emit("proximity:enter", nearbyPlayer);
-        io.to(peerId).emit("proximity:enter", publicPlayer(updatedPlayer));
-
-        const peerSet = proximityState.get(peerId) || new Set();
-        peerSet.add(socket.id);
-        proximityState.set(peerId, peerSet);
-      }
-
-      for (const peerId of oldNearby) {
-        if (newNearby.has(peerId)) continue;
-
-        socket.emit("proximity:leave", peerId);
-        io.to(peerId).emit("proximity:leave", socket.id);
-        proximityState.get(peerId)?.delete(socket.id);
-      }
-
-      proximityState.set(socket.id, newNearby);
+      console.log(
+        "Nearby players for",
+        updatedPlayer.name || updatedPlayer.id,
+        ":",
+        nearbyCount
+      );
     } catch (error) {
       console.error(
         "Failed to update position/find nearby players:",

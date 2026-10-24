@@ -79,27 +79,11 @@ function createCollection(documents, failures = {}) {
   };
 }
 
-function createSession(documents) {
-  return {
-    async withTransaction(callback) {
-      const before = structuredClone(documents);
-      try {
-        await callback();
-      } catch (error) {
-        documents.splice(0, documents.length, ...before);
-        throw error;
-      }
-    },
-    async endSession() {},
-  };
-}
-
-function restore(collection, documents, name = "Returning Player") {
+function restore(collection, _documents, name = "Returning Player") {
   return restoreReturningPlayer(
     collection,
     name,
     "new-socket",
-    createSession(documents),
     ({ x, y }) => ({ x, y })
   );
 }
@@ -328,7 +312,6 @@ async function runTests() {
     createCollection([invalidRecord]),
     "Invalid Player",
     "new-socket",
-    createSession([invalidRecord]),
     ({ x, y }) => ({ x, y })
   );
   check(
@@ -336,40 +319,49 @@ async function runTests() {
     invalidRestore === null && invalidRecord.socketId === "old-socket"
   );
 
-  for (const failureKind of ["update", "delete", "deleteCountMismatch"]) {
-    const savedRecord = {
-      ...returningRecord,
-      _id: `${failureKind}-saved`,
-      socketId: `${failureKind}-old`,
-      connected: false,
-    };
-    const tempRecord = {
-      ...temporaryRecord,
-      _id: `${failureKind}-temporary`,
-    };
-    const failedDocuments = [savedRecord, tempRecord];
-    const original = structuredClone(failedDocuments);
-    let error;
-    try {
-      await restore(
-        createCollection(failedDocuments, {
-          [failureKind === "update"
-            ? "update"
-            : failureKind === "delete"
-              ? "delete"
-              : "deleteCountMismatch"]: true,
-        }),
-        failedDocuments
-      );
-    } catch (caught) {
-      error = caught;
-    }
-    check(
-      `${failureKind} failure aborts restoration without changing player records`,
-      error instanceof Error &&
-        JSON.stringify(failedDocuments) === JSON.stringify(original)
+  // Without a transaction the claim is atomic but the cleanup is best-effort:
+  // an update failure must leave the records untouched, while a cleanup
+  // failure happens after the record has already been claimed.
+  const updateFailureDocuments = [
+    { ...returningRecord, _id: "update-saved", socketId: "update-old", connected: false },
+    { ...temporaryRecord, _id: "update-temporary" },
+  ];
+  const updateFailureOriginal = structuredClone(updateFailureDocuments);
+  let updateError;
+  try {
+    await restore(
+      createCollection(updateFailureDocuments, { update: true }),
+      updateFailureDocuments
     );
+  } catch (caught) {
+    updateError = caught;
   }
+  check(
+    "update failure leaves player records untouched",
+    updateError instanceof Error &&
+      JSON.stringify(updateFailureDocuments) ===
+        JSON.stringify(updateFailureOriginal)
+  );
+
+  const cleanupFailureDocuments = [
+    { ...returningRecord, _id: "cleanup-saved", socketId: "cleanup-old", connected: false },
+    { ...temporaryRecord, _id: "cleanup-temporary" },
+  ];
+  let cleanupError;
+  try {
+    await restore(
+      createCollection(cleanupFailureDocuments, { delete: true }),
+      cleanupFailureDocuments
+    );
+  } catch (caught) {
+    cleanupError = caught;
+  }
+  check(
+    "cleanup failure throws after the record has already been claimed",
+    cleanupError instanceof Error &&
+      cleanupFailureDocuments[0].connected === true &&
+      cleanupFailureDocuments[0].socketId === "new-socket"
+  );
 
   console.log(
     failures === 0

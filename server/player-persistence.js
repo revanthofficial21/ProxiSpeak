@@ -63,68 +63,51 @@ async function restoreReturningPlayer(
   collection,
   name,
   socketId,
-  session,
   normalizePosition
 ) {
-  const candidate = await findRestorablePlayer(collection, name);
-  if (!candidate) return null;
+  const savedPlayer = await findRestorablePlayer(collection, name);
+  if (!savedPlayer) return null;
 
-  let restoredPlayer = null;
+  const position = normalizePosition(savedPlayer);
 
-  await session.withTransaction(async () => {
-    restoredPlayer = null;
-    const savedPlayer = await findRestorablePlayer(collection, name, session);
-    if (!savedPlayer || savedPlayer._id.toString() !== candidate._id.toString()) {
-      return;
-    }
-    const position = normalizePosition(savedPlayer);
-    const claimResult = await collection.updateOne(
-      {
-        _id: savedPlayer._id,
-        socketId: savedPlayer.socketId,
-        name,
-        connected: false,
+  // Claim the saved record with a single-document update. One update is atomic
+  // on its own, so no transaction — and therefore no replica set — is needed.
+  // The filter guarantees we only claim the record while it is still the
+  // inactive one we just read, so two sockets racing for the same name cannot
+  // both win.
+  const claimResult = await collection.updateOne(
+    {
+      _id: savedPlayer._id,
+      socketId: savedPlayer.socketId,
+      name,
+      connected: false,
+    },
+    {
+      $set: {
+        socketId,
+        connected: true,
+        ...positionFields(position.x, position.y),
+        updatedAt: new Date(),
       },
-      {
-        $set: {
-          socketId,
-          connected: true,
-          ...positionFields(position.x, position.y),
-          updatedAt: new Date(),
-        },
-      },
-      { session }
-    );
-
-    if (claimResult.matchedCount !== 1) return;
-
-    const temporaryRecords = await collection
-      .find(
-        {
-          socketId,
-          _id: { $ne: savedPlayer._id },
-        },
-        { session }
-      )
-      .project({ _id: 1 })
-      .toArray();
-    const cleanupResult = await collection.deleteMany(
-      { socketId, _id: { $ne: savedPlayer._id } },
-      { session }
-    );
-    if (cleanupResult.deletedCount !== temporaryRecords.length) {
-      throw new Error("Failed to clean up temporary player records");
     }
+  );
 
-    restoredPlayer = {
-      ...savedPlayer,
-      socketId,
-      connected: true,
-      ...positionFields(position.x, position.y),
-    };
+  if (claimResult.matchedCount !== 1) return null;
+
+  // Best-effort: drop the temporary record the connect-time upsert created for
+  // this socket. Without a transaction this is not all-or-nothing, but the
+  // claim above is the part that must be atomic.
+  await collection.deleteMany({
+    socketId,
+    _id: { $ne: savedPlayer._id },
   });
 
-  return restoredPlayer;
+  return {
+    ...savedPlayer,
+    socketId,
+    connected: true,
+    ...positionFields(position.x, position.y),
+  };
 }
 
 module.exports = {
