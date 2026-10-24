@@ -98,7 +98,8 @@ ProxiSpeak/
 
 1. **Connect.** A browser opens a Socket.IO connection; the server assigns it a
    non-overlapping spawn slot and stores the player in MongoDB with a
-   `location: [x, y]` field.
+   `location: [x, y]` field. Players enter the Lounge by default and can switch
+   between the Lounge, Meeting Room, and Focus Space.
 2. **Move.** The client moves the avatar locally (WASD / arrow keys, with
    furniture collision) and broadcasts `player:move` (throttled ~40 ms). The
    server clamps the position, persists it, and broadcasts `player:moved`.
@@ -107,11 +108,15 @@ ProxiSpeak/
    `proximity:enter` / `proximity:leave` to **both** players as they come into or
    leave range.
 4. **Signaling.** Clients exchange `webrtc:offer` / `webrtc:answer` / `webrtc:ice`
-   through the server, which **relays them only between players within
-   proximity**. The peer with the lower socket id initiates, avoiding glare.
+   through the server, which relays only between same-room nearby players or
+   members of a validated Meeting Room call.
 5. **Audio.** A `RTCPeerConnection` is established per nearby peer; remote audio
    plays through its own audio element. *(Next: route it through the Web Audio
    API for distance-based gain and panning.)*
+6. **Meeting calls.** Players in Meeting Room can join an audio/video call.
+   Call participants reuse the existing peer connections; camera tracks are
+   shared only with other members of that call. A microphone track already
+   captured for proximity audio is reused rather than captured again.
 
 ## 7. Data Model
 
@@ -123,8 +128,17 @@ The `players` collection (MongoDB):
 | `name` | string | Display name |
 | `x`, `y` | number | Avatar position in the 1000×600 world |
 | `location` | `[x, y]` | Geospatial point — indexed with a `2d` index (`min: 0, max: 1000`) |
+| `avatarPrefs` | object | Validated avatar choices, currently `{ color: "mint" \| "blue" \| "violet" \| "coral" \| "gold" }` |
 | `connected` | boolean | Whether the player is currently connected |
 | `createdAt` / `updatedAt` | Date | Timestamps |
+
+Players can save their display name and avatar color from the profile form.
+Preferences are stored separately from position and session state, and are
+restored with the existing unique-display-name reconnect flow when the prior
+player record is inactive.
+The active room is maintained by the server for each live socket session and
+is not persisted in MongoDB. Presence, movement, proximity audio, and chat are
+isolated to players in the same room.
 
 ## 8. Realtime Events
 
@@ -133,6 +147,10 @@ The `players` collection (MongoDB):
 | Event | Payload |
 |---|---|
 | `player:setName` | `name` |
+| `player:setAvatarPrefs` | `{ color }` |
+| `player:joinRoom` | allow-listed room name |
+| `meeting:join` / `meeting:leave` | join or leave the Meeting Room call |
+| `chat:send` | message text |
 | `player:move` | `{ x, y }` |
 | `webrtc:offer` | `{ to, sdp }` |
 | `webrtc:answer` | `{ to, sdp }` |
@@ -142,9 +160,12 @@ The `players` collection (MongoDB):
 
 | Event | Payload |
 |---|---|
-| `world:state` | array of players |
+| `room:state` | `{ room, players }` |
+| `meeting:participant-joined` / `meeting:participant-left` | participant / socket id |
 | `player:joined` / `player:moved` / `player:left` | player / id |
 | `player:renamed` | player |
+| `player:avatarPrefs` | player |
+| `chat:message` | room-scoped chat message |
 | `player:nearby` | array of nearby players |
 | `proximity:enter` / `proximity:leave` | peer / peer id |
 

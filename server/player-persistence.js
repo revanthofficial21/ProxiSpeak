@@ -1,3 +1,5 @@
+const AVATAR_COLORS = ["mint", "blue", "violet", "coral", "gold"];
+
 function positionFields(x, y) {
   return {
     x,
@@ -37,10 +39,46 @@ function markPlayerDisconnected(collection, socketId) {
   );
 }
 
+function normalizeAvatarPrefs(avatarPrefs) {
+  if (
+    !avatarPrefs ||
+    typeof avatarPrefs !== "object" ||
+    Array.isArray(avatarPrefs) ||
+    !AVATAR_COLORS.includes(avatarPrefs.color)
+  ) {
+    return null;
+  }
+
+  return { color: avatarPrefs.color };
+}
+
+function saveAvatarPrefs(collection, socketId, avatarPrefs) {
+  const normalizedPrefs = normalizeAvatarPrefs(avatarPrefs);
+  if (!normalizedPrefs) {
+    throw new TypeError("Invalid avatar preferences");
+  }
+
+  return collection.updateOne(
+    { socketId, connected: true },
+    {
+      $set: {
+        avatarPrefs: normalizedPrefs,
+      },
+    }
+  );
+}
+
 async function findRestorablePlayer(collection, name, session) {
   const matches = await collection
     .find({ name }, session ? { session } : undefined)
-    .project({ _id: 1, socketId: 1, x: 1, y: 1, connected: 1 })
+    .project({
+      _id: 1,
+      socketId: 1,
+      x: 1,
+      y: 1,
+      connected: 1,
+      avatarPrefs: 1,
+    })
     .limit(2)
     .toArray();
 
@@ -113,6 +151,8 @@ async function restoreReturningPlayer(
 module.exports = {
   markPlayerConnected,
   markPlayerDisconnected,
+  normalizeAvatarPrefs,
   positionFields,
   restoreReturningPlayer,
+  saveAvatarPrefs,
 };

@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node proximity.test.js && node player-persistence.test.js"
+    "test": "node proximity.test.js && node player-persistence.test.js && node chat.test.js && node rooms.test.js && node meeting-call.test.js"
   },
   "keywords": [],
   "author": "",

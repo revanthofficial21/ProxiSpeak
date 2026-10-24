@@ -11,8 +11,16 @@ const AVATAR_RADIUS = 20;
 const AUDIO_PROXIMITY_RADIUS = 100;
 const MIN_REMOTE_VOLUME = 0.1;
 const VOLUME_SMOOTHING_SECONDS = 0.15;
+const ROOMS = ["Lounge", "Meeting Room", "Focus Space"];
 
 const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+const AVATAR_PALETTE = {
+  mint: { fill: "#6ee7b7", stroke: "#34d399" },
+  blue: { fill: "#93c5fd", stroke: "#60a5fa" },
+  violet: { fill: "#c4b5fd", stroke: "#a78bfa" },
+  coral: { fill: "#fb7185", stroke: "#f43f5e" },
+  gold: { fill: "#fbbf24", stroke: "#f59e0b" },
+};
 
 function getRemoteVolume(localPlayer, remotePlayer) {
   if (
@@ -36,6 +44,107 @@ function getRemoteVolume(localPlayer, remotePlayer) {
 function isAudioBeingReceived(audio) {
   const tracks = audio?.srcObject?.getAudioTracks?.() || [];
   return tracks.some((track) => track.readyState === "live" && !track.muted);
+}
+
+async function getMeetingMedia(existingAudioTrack) {
+  if (existingAudioTrack?.readyState === "live") {
+    try {
+      const videoStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: true,
+      });
+      return {
+        stream: new MediaStream([
+          existingAudioTrack,
+          ...videoStream.getVideoTracks(),
+        ]),
+        warning: "",
+      };
+    } catch (error) {
+      if (!["NotFoundError", "NotAllowedError"].includes(error.name)) {
+        throw error;
+      }
+      return {
+        stream: new MediaStream([existingAudioTrack]),
+        warning:
+          error.name === "NotAllowedError"
+            ? "Camera permission was denied; joining with microphone only."
+            : "No camera was found; joining with microphone only.",
+      };
+    }
+  }
+
+  try {
+    return {
+      stream: await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: true,
+      }),
+      warning: "",
+    };
+  } catch (error) {
+    if (error.name !== "NotFoundError") throw error;
+
+    const [audioResult, videoResult] = await Promise.allSettled([
+      navigator.mediaDevices.getUserMedia({ audio: true, video: false }),
+      navigator.mediaDevices.getUserMedia({ audio: false, video: true }),
+    ]);
+    const tracks = [];
+    if (audioResult.status === "fulfilled") {
+      tracks.push(...audioResult.value.getAudioTracks());
+    }
+    if (videoResult.status === "fulfilled") {
+      tracks.push(...videoResult.value.getVideoTracks());
+    }
+    if (tracks.length === 0) {
+      throw audioResult.reason || videoResult.reason;
+    }
+
+    const stream = new MediaStream(tracks);
+    return {
+      stream,
+      warning:
+        tracks.some((track) => track.kind === "audio") &&
+        tracks.some((track) => track.kind === "video")
+          ? ""
+          : `No ${tracks[0].kind === "audio" ? "camera" : "microphone"} found; joining with ${tracks[0].kind}-only media.`,
+    };
+  }
+}
+
+const pendingOfferConnections = new WeakSet();
+
+function sendOffer(socket, peerId, peerConnection) {
+  if (pendingOfferConnections.has(peerConnection)) return;
+  pendingOfferConnections.add(peerConnection);
+
+  const offerWhenReady = () => {
+    if (peerConnection.signalingState !== "stable") {
+      peerConnection.addEventListener(
+        "signalingstatechange",
+        offerWhenReady,
+        { once: true }
+      );
+      return;
+    }
+
+    peerConnection
+      .createOffer()
+      .then((offer) => peerConnection.setLocalDescription(offer))
+      .then(() =>
+        socket.emit("webrtc:offer", {
+          to: peerId,
+          sdp: peerConnection.localDescription,
+        })
+      )
+      .then(() => pendingOfferConnections.delete(peerConnection))
+      .catch((error) => {
+        pendingOfferConnections.delete(peerConnection);
+        console.error("Failed to create offer:", error.message);
+      });
+  };
+
+  offerWhenReady();
 }
 
 function withDistanceFromPlayer(player, localPlayer) {
@@ -65,6 +174,7 @@ function hasSameNearbyDisplay(currentPlayers, nextPlayers) {
       return (
         player.id === nextPlayer.id &&
         player.name === nextPlayer.name &&
+        player.avatarPrefs?.color === nextPlayer.avatarPrefs?.color &&
         player.distance === nextPlayer.distance &&
         getDisplayCoordinate(player.x) === getDisplayCoordinate(nextPlayer.x) &&
         getDisplayCoordinate(player.y) === getDisplayCoordinate(nextPlayer.y)
@@ -152,6 +262,11 @@ export default function App() {
   const pendingCandidatesRef = useRef(new Map());
   const audioEnabledRef = useRef(false);
   const audioRequestRef = useRef(false);
+  const meetingStreamRef = useRef(null);
+  const meetingAudioTrackRef = useRef(null);
+  const meetingParticipantsRef = useRef(new Set());
+  const meetingCallActiveRef = useRef(false);
+  const localMeetingVideoRef = useRef(null);
 
   const [connected, setConnected] = useState(false);
   const [playerCount, setPlayerCount] = useState(0);
@@ -160,8 +275,26 @@ export default function App() {
   const [audioMuted, setAudioMuted] = useState(false);
   const [audioError, setAudioError] = useState("");
   const [playerName, setPlayerName] = useState("");
+  const [avatarColor, setAvatarColor] = useState("mint");
+  const [avatarPrefsDirty, setAvatarPrefsDirty] = useState(false);
   const [nameError, setNameError] = useState("");
   const [peerStates, setPeerStates] = useState({});
+  const [meetingCallJoined, setMeetingCallJoined] = useState(false);
+  const [meetingCallBusy, setMeetingCallBusy] = useState(false);
+  const [meetingParticipants, setMeetingParticipants] = useState([]);
+  const [meetingStream, setMeetingStream] = useState(null);
+  const [remoteVideoStreams, setRemoteVideoStreams] = useState({});
+  const [meetingMicEnabled, setMeetingMicEnabled] = useState(true);
+  const [meetingCameraEnabled, setMeetingCameraEnabled] = useState(true);
+  const [meetingHasMicrophone, setMeetingHasMicrophone] = useState(false);
+  const [meetingHasCamera, setMeetingHasCamera] = useState(false);
+  const [meetingCallError, setMeetingCallError] = useState("");
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatDraft, setChatDraft] = useState("");
+  const [chatError, setChatError] = useState("");
+  const [currentRoom, setCurrentRoom] = useState(ROOMS[0]);
+  const [roomError, setRoomError] = useState("");
+  const [roomSwitching, setRoomSwitching] = useState(false);
 
   const updatePlayerCount = useCallback(() => {
     setPlayerCount(playersRef.current.size);
@@ -194,6 +327,13 @@ export default function App() {
       remoteAudioRef.current.delete(peerId);
     }
 
+    setRemoteVideoStreams((current) => {
+      if (!(peerId in current)) return current;
+      const next = { ...current };
+      delete next[peerId];
+      return next;
+    });
+
     setPeerStates((current) => {
       if (!(peerId in current)) return current;
       const next = { ...current };
@@ -204,17 +344,38 @@ export default function App() {
 
   // Create (or return) the RTCPeerConnection for a nearby peer.
   const createPeer = useCallback((peerId, initiator) => {
-    if (peersRef.current.has(peerId)) return peersRef.current.get(peerId);
-
     const socket = socketRef.current;
     if (!socket) return null;
 
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const existingPeer = peersRef.current.get(peerId);
+    const pc = existingPeer || new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    let addedMeetingTrack = false;
 
     if (localStreamRef.current) {
-      localStreamRef.current
-        .getTracks()
-        .forEach((track) => pc.addTrack(track, localStreamRef.current));
+      localStreamRef.current.getTracks().forEach((track) => {
+        if (
+          !pc.getSenders().some((sender) => sender.track?.id === track.id)
+        ) {
+          pc.addTrack(track, localStreamRef.current);
+        }
+      });
+    }
+
+    if (meetingParticipantsRef.current.has(peerId) && meetingStreamRef.current) {
+      meetingStreamRef.current.getTracks().forEach((track) => {
+        if (
+          pc.getSenders().some((sender) => sender.track?.id === track.id)
+        ) {
+          return;
+        }
+        pc.addTrack(track, meetingStreamRef.current);
+        addedMeetingTrack = true;
+      });
+    }
+
+    if (existingPeer) {
+      if (addedMeetingTrack && initiator) sendOffer(socket, peerId, pc);
+      return pc;
     }
 
     pc.onicecandidate = (event) => {
@@ -251,6 +412,23 @@ export default function App() {
         track.onunmute = refreshPeerStatus;
         track.onended = refreshPeerStatus;
       });
+      const videoTracks = stream.getVideoTracks();
+      if (videoTracks.length > 0) {
+        setRemoteVideoStreams((current) => ({
+          ...current,
+          [peerId]: stream,
+        }));
+        videoTracks.forEach((track) => {
+          track.onended = () => {
+            setRemoteVideoStreams((current) => {
+              if (!(peerId in current)) return current;
+              const next = { ...current };
+              delete next[peerId];
+              return next;
+            });
+          };
+        });
+      }
       audio.srcObject = stream;
       audio.play().catch((error) => {
         console.warn("Remote audio playback needs user interaction:", error);
@@ -279,14 +457,7 @@ export default function App() {
 
     // The peer with the lower id offers, so both sides agree who initiates.
     if (initiator) {
-      pc.createOffer()
-        .then((offer) => pc.setLocalDescription(offer))
-        .then(() =>
-          socket.emit("webrtc:offer", { to: peerId, sdp: pc.localDescription })
-        )
-        .catch((error) =>
-          console.error("Failed to create offer:", error.message)
-        );
+      sendOffer(socket, peerId, pc);
     }
 
     return pc;
@@ -334,7 +505,10 @@ export default function App() {
 
       // If our mic isn't on yet, hold the offer until it is — otherwise we'd
       // answer without our audio track and could never be heard.
-      if (!audioEnabledRef.current) {
+      if (
+        !audioEnabledRef.current &&
+        !meetingCallActiveRef.current
+      ) {
         pendingOffersRef.current.set(from, sdp);
         return;
       }
@@ -387,14 +561,21 @@ export default function App() {
 
     try {
       setAudioError("");
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: false,
-      });
+      const sharedMeetingTrack =
+        meetingAudioTrackRef.current?.readyState === "live"
+          ? meetingAudioTrackRef.current
+          : null;
+      const stream = sharedMeetingTrack
+        ? new MediaStream([sharedMeetingTrack])
+        : await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: false,
+          });
       localStreamRef.current = stream;
       audioEnabledRef.current = true;
       setAudioEnabled(true);
-      setAudioMuted(false);
+      setAudioMuted(!stream.getAudioTracks()[0]?.enabled);
+      setMeetingMicEnabled(stream.getAudioTracks()[0]?.enabled !== false);
 
       const socket = socketRef.current;
       const pending = new Set([
@@ -423,22 +604,26 @@ export default function App() {
   }, [createPeer, answerOffer]);
 
   const toggleMute = useCallback(() => {
-    const stream = localStreamRef.current;
-    if (!stream) return;
+    const stream = localStreamRef.current || meetingStreamRef.current;
+    const tracks = stream?.getAudioTracks() || [];
+    if (tracks.length === 0) return;
 
     const nextMuted = !audioMuted;
-    stream.getAudioTracks().forEach((track) => {
+    tracks.forEach((track) => {
       track.enabled = !nextMuted;
     });
     setAudioMuted(nextMuted);
+    setMeetingMicEnabled(!nextMuted);
   }, [audioMuted]);
 
   const disableAudio = useCallback(() => {
     socketRef.current?.emit("webrtc:leave");
     for (const peerId of peersRef.current.keys()) {
-      closePeer(peerId);
+      if (!meetingParticipantsRef.current.has(peerId)) closePeer(peerId);
     }
-    localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    for (const track of localStreamRef.current?.getTracks() || []) {
+      if (track !== meetingAudioTrackRef.current) track.stop();
+    }
     localStreamRef.current = null;
     audioEnabledRef.current = false;
     pendingOffersRef.current.clear();
@@ -446,6 +631,215 @@ export default function App() {
     setAudioEnabled(false);
     setAudioMuted(false);
   }, [closePeer]);
+
+  const removeMeetingTracks = useCallback((peerId) => {
+    const pc = peersRef.current.get(peerId);
+    if (!pc || !meetingStreamRef.current) return;
+
+    let removedTrack = false;
+    const meetingTrackIds = new Set(
+      meetingStreamRef.current.getTracks().map((track) => track.id)
+    );
+    for (const sender of pc.getSenders()) {
+      if (!sender.track || !meetingTrackIds.has(sender.track.id)) continue;
+      if (
+        sender.track === meetingAudioTrackRef.current &&
+        audioEnabledRef.current
+      ) {
+        continue;
+      }
+      pc.removeTrack(sender);
+      removedTrack = true;
+    }
+
+    if (!nearbyRef.current.has(peerId)) {
+      closePeer(peerId);
+      return;
+    }
+
+    const socket = socketRef.current;
+    if (
+      removedTrack &&
+      socket?.id &&
+      socket.id < peerId &&
+      pc.signalingState === "stable"
+    ) {
+      sendOffer(socket, peerId, pc);
+    }
+  }, [closePeer]);
+
+  const cleanupMeetingCall = useCallback((notifyServer = true) => {
+    if (notifyServer) socketRef.current?.emit("meeting:leave");
+    const participantIds = Array.from(meetingParticipantsRef.current);
+    meetingCallActiveRef.current = false;
+    meetingParticipantsRef.current.clear();
+
+    participantIds.forEach(removeMeetingTracks);
+
+    const audioTrack = meetingAudioTrackRef.current;
+    for (const track of meetingStreamRef.current?.getTracks() || []) {
+      if (track === audioTrack && audioEnabledRef.current) continue;
+      track.stop();
+    }
+    meetingStreamRef.current = null;
+    setMeetingStream(null);
+    if (!audioEnabledRef.current) meetingAudioTrackRef.current = null;
+
+    if (localMeetingVideoRef.current) {
+      localMeetingVideoRef.current.srcObject = null;
+    }
+    setMeetingCallJoined(false);
+    setMeetingParticipants([]);
+    setRemoteVideoStreams({});
+    setMeetingMicEnabled(false);
+    setMeetingCameraEnabled(false);
+    setMeetingHasMicrophone(false);
+    setMeetingHasCamera(false);
+    setMeetingCallError("");
+  }, [removeMeetingTracks]);
+
+  const joinMeetingCall = useCallback(async () => {
+    if (currentRoom !== "Meeting Room" || meetingCallBusy) return;
+    const socket = socketRef.current;
+    if (!socket?.connected) return;
+
+    setMeetingCallBusy(true);
+    setMeetingCallError("");
+    let acquiredStream;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setMeetingCallBusy(false);
+      setMeetingCallError(
+        "Microphone and camera access requires a secure browser context."
+      );
+      return;
+    }
+
+    try {
+      const existingAudioTrack =
+        localStreamRef.current?.getAudioTracks()[0] ||
+        (meetingAudioTrackRef.current?.readyState === "live"
+          ? meetingAudioTrackRef.current
+          : null);
+      const media = await getMeetingMedia(existingAudioTrack);
+      acquiredStream = media.stream;
+      meetingStreamRef.current = acquiredStream;
+      setMeetingStream(acquiredStream);
+      meetingAudioTrackRef.current =
+        acquiredStream.getAudioTracks()[0] || null;
+      setMeetingHasMicrophone(acquiredStream.getAudioTracks().length > 0);
+      setMeetingHasCamera(acquiredStream.getVideoTracks().length > 0);
+      acquiredStream.getAudioTracks().forEach((track) => {
+        track.onended = () => {
+          setMeetingHasMicrophone(false);
+          setMeetingMicEnabled(false);
+          if (audioEnabledRef.current) setAudioMuted(true);
+          setMeetingCallError("The microphone disconnected.");
+        };
+      });
+      acquiredStream.getVideoTracks().forEach((track) => {
+        track.onended = () => {
+          setMeetingHasCamera(false);
+          setMeetingCameraEnabled(false);
+          setMeetingCallError("The camera disconnected.");
+        };
+      });
+      setMeetingMicEnabled(
+        acquiredStream.getAudioTracks()[0]?.enabled === true
+      );
+      setMeetingCameraEnabled(
+        acquiredStream.getVideoTracks()[0]?.enabled === true
+      );
+      if (media.warning) setMeetingCallError(media.warning);
+
+      socket.timeout(10000).emit("meeting:join", (timeoutError, response) => {
+        setMeetingCallBusy(false);
+        if (timeoutError || !response?.success) {
+          const sharedTrack = existingAudioTrack;
+          for (const track of acquiredStream.getTracks()) {
+            if (track !== sharedTrack || !audioEnabledRef.current) {
+              track.stop();
+            }
+          }
+          meetingStreamRef.current = null;
+          setMeetingStream(null);
+          meetingAudioTrackRef.current = audioEnabledRef.current
+            ? sharedTrack
+            : null;
+          setMeetingMicEnabled(false);
+          setMeetingCameraEnabled(false);
+          setMeetingHasMicrophone(false);
+          setMeetingHasCamera(false);
+          setMeetingCallError(
+            response?.error ||
+              (timeoutError
+                ? "The meeting call request timed out."
+                : "Could not join the meeting call.")
+          );
+          return;
+        }
+
+        meetingCallActiveRef.current = true;
+        const participants = Array.isArray(response.participants)
+          ? response.participants.filter(
+              (participant) =>
+                participant &&
+                typeof participant.id === "string" &&
+                participant.id !== socket.id
+            )
+          : [];
+        meetingParticipantsRef.current = new Set(
+          participants.map((participant) => participant.id)
+        );
+        setMeetingParticipants(participants);
+        setMeetingCallJoined(true);
+        participants.forEach((participant) =>
+          createPeer(participant.id, socket.id < participant.id)
+        );
+      });
+    } catch (error) {
+      if (acquiredStream) {
+        const sharedTrack = localStreamRef.current?.getAudioTracks()[0];
+        acquiredStream.getTracks().forEach((track) => {
+          if (track !== sharedTrack || !audioEnabledRef.current) track.stop();
+        });
+      }
+      meetingStreamRef.current = null;
+      setMeetingStream(null);
+      meetingAudioTrackRef.current =
+        localStreamRef.current?.getAudioTracks()[0] || null;
+      setMeetingHasMicrophone(false);
+      setMeetingHasCamera(false);
+      setMeetingCallBusy(false);
+      setMeetingCallError(
+        error.name === "NotAllowedError" || error.name === "SecurityError"
+          ? "Microphone or camera permission was denied. Check browser permissions."
+          : error.message || "Could not access a microphone or camera."
+      );
+    }
+  }, [createPeer, currentRoom, meetingCallBusy]);
+
+  const toggleMeetingMicrophone = useCallback(() => {
+    const tracks = meetingStreamRef.current?.getAudioTracks() || [];
+    const track = tracks.find((candidate) => candidate.readyState === "live");
+    if (!track) return;
+    const nextEnabled = !track.enabled;
+    tracks.forEach((candidate) => {
+      candidate.enabled = nextEnabled;
+    });
+    setMeetingMicEnabled(nextEnabled);
+    if (audioEnabledRef.current) setAudioMuted(!nextEnabled);
+  }, []);
+
+  const toggleMeetingCamera = useCallback(() => {
+    const tracks = meetingStreamRef.current?.getVideoTracks() || [];
+    const track = tracks.find((candidate) => candidate.readyState === "live");
+    if (!track || track.readyState !== "live") return;
+    const nextEnabled = !track.enabled;
+    tracks.forEach((candidate) => {
+      candidate.enabled = nextEnabled;
+    });
+    setMeetingCameraEnabled(nextEnabled);
+  }, []);
 
   const setName = useCallback((event) => {
     event.preventDefault();
@@ -467,9 +861,68 @@ export default function App() {
         return;
       }
       setPlayerName(response.name);
-      setNameError("");
+      const selectedColor =
+        response.restored && !avatarPrefsDirty
+          ? response.avatarPrefs?.color || "mint"
+          : avatarColor;
+
+      if (response.restored && !avatarPrefsDirty) {
+        setAvatarColor(selectedColor);
+        setAvatarPrefsDirty(false);
+        setNameError("");
+        return;
+      }
+
+      socket.emit(
+        "player:setAvatarPrefs",
+        { color: selectedColor },
+        (prefsResponse) => {
+          if (!prefsResponse?.success) {
+            setNameError(
+              prefsResponse?.error || "Could not save avatar preferences."
+            );
+            return;
+          }
+          setAvatarPrefsDirty(false);
+          setNameError("");
+        }
+      );
     });
-  }, [playerName]);
+  }, [avatarColor, avatarPrefsDirty, playerName]);
+
+  const sendChatMessage = useCallback((event) => {
+    event.preventDefault();
+    const text = chatDraft.trim();
+    const socket = socketRef.current;
+    if (!text || !socket?.connected) return;
+
+    socket.emit("chat:send", text, (response) => {
+      if (!response?.success) {
+        setChatError(response?.error || "Could not send message.");
+        return;
+      }
+      setChatDraft("");
+      setChatError("");
+    });
+  }, [chatDraft]);
+
+  const joinRoom = useCallback((event) => {
+    const room = event.target.value;
+    const socket = socketRef.current;
+    if (!socket?.connected || !ROOMS.includes(room)) return;
+
+    setRoomSwitching(true);
+    setRoomError("");
+    if (meetingCallJoined && room !== currentRoom) cleanupMeetingCall();
+    socket.emit("player:joinRoom", room, (response) => {
+      setRoomSwitching(false);
+      if (!response?.success) {
+        setRoomError(response?.error || "Could not switch rooms.");
+        return;
+      }
+      setCurrentRoom(response.room);
+    });
+  }, [cleanupMeetingCall, currentRoom, meetingCallJoined]);
 
   // Socket.IO connection and multiplayer events
   useEffect(() => {
@@ -486,10 +939,37 @@ export default function App() {
       setNearbyPlayers([]);
       nearbyRef.current = new Set();
       playersRef.current.clear();
+      cleanupMeetingCall(false);
+      localStreamRef.current?.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
+      meetingAudioTrackRef.current = null;
+      audioEnabledRef.current = false;
+      setAudioEnabled(false);
+      setAudioMuted(false);
       for (const peerId of peersRef.current.keys()) closePeer(peerId);
       pendingPeersRef.current.clear();
       pendingOffersRef.current.clear();
       pendingCandidatesRef.current.clear();
+      updatePlayerCount();
+    });
+
+    socket.on("room:state", ({ room, players } = {}) => {
+      if (!ROOMS.includes(room) || !Array.isArray(players)) return;
+
+      playersRef.current = new Map(
+        players
+          .filter((player) => player && typeof player.id === "string")
+          .map((player) => [player.id, player])
+      );
+      nearbyRef.current.clear();
+      for (const peerId of peersRef.current.keys()) closePeer(peerId);
+      pendingPeersRef.current.clear();
+      pendingOffersRef.current.clear();
+      pendingCandidatesRef.current.clear();
+      setCurrentRoom(room);
+      setNearbyPlayers([]);
+      setChatMessages([]);
+      setRoomError("");
       updatePlayerCount();
     });
 
@@ -539,6 +1019,13 @@ export default function App() {
     socket.on("player:renamed", (player) => {
       if (!player || typeof player.id !== "string") return;
       playersRef.current.set(player.id, player);
+      setMeetingParticipants((current) =>
+        current.map((participant) =>
+          participant.id === player.id
+            ? { ...participant, name: player.name }
+            : participant
+        )
+      );
       const updatedPlayer = withDistanceFromPlayer(
         player,
         playersRef.current.get(socket.id)
@@ -548,6 +1035,32 @@ export default function App() {
           nearbyPlayer.id === player.id ? updatedPlayer : nearbyPlayer
         )
       );
+    });
+
+    socket.on("player:avatarPrefs", (player) => {
+      if (!player || typeof player.id !== "string") return;
+      playersRef.current.set(player.id, player);
+      const updatedPlayer = withDistanceFromPlayer(
+        player,
+        playersRef.current.get(socket.id)
+      );
+      setNearbyPlayers((current) =>
+        current.map((nearbyPlayer) =>
+          nearbyPlayer.id === player.id ? updatedPlayer : nearbyPlayer
+        )
+      );
+    });
+
+    socket.on("chat:message", (message) => {
+      if (
+        !message ||
+        !Number.isSafeInteger(message.id) ||
+        typeof message.senderName !== "string" ||
+        typeof message.text !== "string"
+      ) {
+        return;
+      }
+      setChatMessages((current) => [...current.slice(-99), message]);
     });
 
     socket.on("player:nearby", (list) => {
@@ -578,8 +1091,49 @@ export default function App() {
       playersRef.current.delete(id);
       nearbyRef.current.delete(id);
       setNearbyPlayers((current) => current.filter((p) => p.id !== id));
+      meetingParticipantsRef.current.delete(id);
+      setMeetingParticipants((current) =>
+        current.filter((participant) => participant.id !== id)
+      );
+      removeMeetingTracks(id);
       closePeer(id);
       updatePlayerCount();
+    });
+
+    socket.on("meeting:participant-joined", (participant) => {
+      if (
+        !meetingCallActiveRef.current ||
+        !participant ||
+        typeof participant.id !== "string" ||
+        participant.id === socket.id
+      ) {
+        return;
+      }
+
+      meetingParticipantsRef.current.add(participant.id);
+      setMeetingParticipants((current) =>
+        current.some((candidate) => candidate.id === participant.id)
+          ? current.map((candidate) =>
+              candidate.id === participant.id ? participant : candidate
+            )
+          : [...current, participant]
+      );
+      createPeer(participant.id, socket.id < participant.id);
+    });
+
+    socket.on("meeting:participant-left", (participantId) => {
+      if (typeof participantId !== "string") return;
+      meetingParticipantsRef.current.delete(participantId);
+      setMeetingParticipants((current) =>
+        current.filter((participant) => participant.id !== participantId)
+      );
+      setRemoteVideoStreams((current) => {
+        if (!(participantId in current)) return current;
+        const next = { ...current };
+        delete next[participantId];
+        return next;
+      });
+      removeMeetingTracks(participantId);
     });
 
     // Proximity drives the audio sessions.
@@ -615,7 +1169,7 @@ export default function App() {
         current.filter((nearbyPlayer) => nearbyPlayer.id !== peerId)
       );
       pendingPeersRef.current.delete(peerId);
-      closePeer(peerId);
+      if (!meetingParticipantsRef.current.has(peerId)) closePeer(peerId);
     });
 
     socket.on("webrtc:offer", handleOffer);
@@ -641,6 +1195,8 @@ export default function App() {
     handleOffer,
     handleAnswer,
     handleIce,
+    cleanupMeetingCall,
+    removeMeetingTracks,
   ]);
 
   // Keyboard movement and Canvas rendering
@@ -763,7 +1319,9 @@ export default function App() {
           continue;
         }
 
-        const targetVolume = getRemoteVolume(current, players.get(peerId));
+        const targetVolume = meetingParticipantsRef.current.has(peerId)
+          ? 1
+          : getRemoteVolume(current, players.get(peerId));
         const smoothing = 1 - Math.exp(-deltaTime / VOLUME_SMOOTHING_SECONDS);
         audio.volume += (targetVolume - audio.volume) * smoothing;
         audio.volume = Math.max(0, Math.min(audio.volume, 1));
@@ -813,12 +1371,14 @@ export default function App() {
 
         ctx.beginPath();
         ctx.arc(player.x, player.y, AVATAR_RADIUS, 0, Math.PI * 2);
-        ctx.fillStyle = isMe ? "#6ee7b7" : "#93c5fd";
+        const avatarColors =
+          AVATAR_PALETTE[player.avatarPrefs?.color] || AVATAR_PALETTE.mint;
+        ctx.fillStyle = avatarColors.fill;
         ctx.fill();
 
         ctx.beginPath();
         ctx.arc(player.x, player.y, 27, 0, Math.PI * 2);
-        ctx.strokeStyle = isMe ? "#34d399" : "#60a5fa";
+        ctx.strokeStyle = avatarColors.stroke;
         ctx.globalAlpha = 0.5;
         ctx.stroke();
         ctx.globalAlpha = 1;
@@ -877,47 +1437,94 @@ export default function App() {
         <div className="player-count">
           <span className="count-number">{playerCount}</span>
           <span className="count-label">
-            Connected player{playerCount === 1 ? "" : "s"}
+            Player{playerCount === 1 ? "" : "s"} in this space
           </span>
         </div>
       </section>
 
-      <section className="world-card">
-        <div className="world-toolbar">
-          <div>
-            <span className="live-dot" />
-            <strong>Open World</strong>
-            <span className="world-subtitle"> · 2D proximity space</span>
+      <div className="world-layout">
+        <section className="world-card">
+          <div className="world-toolbar">
+            <div>
+              <span className="live-dot" />
+              <strong>{currentRoom}</strong>
+              <span className="world-subtitle"> · shared space</span>
+            </div>
+            <label className="room-select-label">
+              <span>Space</span>
+              <select
+                aria-label="Select space"
+                value={currentRoom}
+                disabled={!connected || roomSwitching || meetingCallBusy}
+                onChange={joinRoom}
+              >
+                {ROOMS.map((room) => (
+                  <option key={room} value={room}>{room}</option>
+                ))}
+              </select>
+            </label>
           </div>
-          <span className="coordinate-label">1000 × 600</span>
-        </div>
 
-        <div
-          ref={canvasWrapRef}
-          className="canvas-wrap"
-          tabIndex={0}
-          aria-label="Game world. Click here, then use WASD or arrow keys to move."
-          onClick={() => canvasWrapRef.current?.focus()}
-        >
-          <canvas
-            ref={canvasRef}
-            width={WORLD_WIDTH}
-            height={WORLD_HEIGHT}
-            className="world-canvas"
-          />
-        </div>
-
-        <div className="world-footer">
-          <div className="controls">
-            <span className="key">W</span>
-            <span className="key">A</span>
-            <span className="key">S</span>
-            <span className="key">D</span>
-            <span className="controls-label">or arrow keys to move</span>
+          <div
+            ref={canvasWrapRef}
+            className="canvas-wrap"
+            tabIndex={0}
+            aria-label="Game world. Click here, then use WASD or arrow keys to move."
+            onClick={() => canvasWrapRef.current?.focus()}
+          >
+            <canvas
+              ref={canvasRef}
+              width={WORLD_WIDTH}
+              height={WORLD_HEIGHT}
+              className="world-canvas"
+            />
           </div>
-          <span className="footer-note">Multiplayer movement prototype</span>
-        </div>
-      </section>
+
+          <div className="world-footer">
+            <div className="controls">
+              <span className="key">W</span>
+              <span className="key">A</span>
+              <span className="key">S</span>
+              <span className="key">D</span>
+              <span className="controls-label">or arrow keys to move</span>
+            </div>
+            <span className="footer-note">Multiplayer movement prototype</span>
+          </div>
+        </section>
+
+        <aside className="chat-panel" aria-label={`${currentRoom} chat`}>
+          <strong>{currentRoom} chat</strong>
+          <div className="chat-messages" role="log" aria-live="polite">
+            {chatMessages.length === 0 ? (
+              <p className="chat-empty">No messages yet. Say hello!</p>
+            ) : (
+              chatMessages.map((message) => (
+                <p className="chat-message" key={message.id}>
+                  <strong>{message.senderName}</strong>
+                  <span>{message.text}</span>
+                </p>
+              ))
+            )}
+          </div>
+          <form className="chat-composer" onSubmit={sendChatMessage}>
+            <input
+              aria-label="Chat message"
+              maxLength={500}
+              value={chatDraft}
+              onChange={(event) => {
+                setChatDraft(event.target.value);
+                setChatError("");
+              }}
+              placeholder="Write a message"
+            />
+            <button type="submit" disabled={!connected || !chatDraft.trim()}>
+              Send
+            </button>
+          </form>
+          {chatError && <p className="chat-error" role="alert">{chatError}</p>}
+        </aside>
+      </div>
+      {roomError && <p className="room-error" role="alert">{roomError}</p>}
 
       <section className="audio-panel">
         <strong>Proximity audio</strong>
@@ -930,8 +1537,23 @@ export default function App() {
             onChange={(event) => setPlayerName(event.target.value)}
             placeholder="Enter your player name"
           />
+          <label htmlFor="avatar-color">Avatar color</label>
+          <select
+            id="avatar-color"
+            value={avatarColor}
+            onChange={(event) => {
+              setAvatarColor(event.target.value);
+              setAvatarPrefsDirty(true);
+            }}
+          >
+            <option value="mint">Mint</option>
+            <option value="blue">Blue</option>
+            <option value="violet">Violet</option>
+            <option value="coral">Coral</option>
+            <option value="gold">Gold</option>
+          </select>
           <button type="submit" disabled={!connected}>
-            Save name
+            Save profile
           </button>
         </form>
         {nameError && <p role="alert">{nameError}</p>}
@@ -962,6 +1584,135 @@ export default function App() {
               </li>
             ))}
           </ul>
+        )}
+      </section>
+
+      <section className="meeting-panel">
+        <div className="meeting-panel-heading">
+          <div>
+            <strong>Meeting Room call</strong>
+            <p>
+              {currentRoom === "Meeting Room"
+                ? meetingCallJoined
+                  ? `${meetingParticipants.length + 1} participant${meetingParticipants.length === 0 ? "" : "s"} in the call`
+                  : "Start an audio and video call with people in the Meeting Room."
+                : "Switch to Meeting Room to start or join a call."}
+            </p>
+          </div>
+          {meetingCallJoined ? (
+            <button
+              type="button"
+              className="meeting-leave-button"
+              onClick={() => cleanupMeetingCall()}
+            >
+              Leave call
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={joinMeetingCall}
+              disabled={
+                !connected ||
+                currentRoom !== "Meeting Room" ||
+                meetingCallBusy
+              }
+            >
+              {meetingCallBusy ? "Joining…" : "Join call"}
+            </button>
+          )}
+        </div>
+
+        {meetingCallJoined && (
+          <>
+            <div className="meeting-controls">
+              <button
+                type="button"
+                onClick={toggleMeetingMicrophone}
+                disabled={!meetingHasMicrophone}
+              >
+                {meetingMicEnabled ? "Mute microphone" : "Enable microphone"}
+              </button>
+              <button
+                type="button"
+                onClick={toggleMeetingCamera}
+                disabled={!meetingHasCamera}
+              >
+                {meetingCameraEnabled ? "Turn camera off" : "Enable camera"}
+              </button>
+            </div>
+
+            <div className="meeting-video-grid">
+              <article className="meeting-video-tile">
+                {meetingHasCamera ? (
+                  <video
+                    ref={(element) => {
+                      localMeetingVideoRef.current = element;
+                      if (element && element.srcObject !== meetingStream) {
+                        element.srcObject = meetingStream;
+                      }
+                    }}
+                    autoPlay
+                    muted
+                    playsInline
+                  />
+                ) : (
+                  <div className="meeting-video-placeholder">
+                    Camera unavailable
+                  </div>
+                )}
+                <div className="meeting-video-caption">
+                  <strong>{playerName || "You"}</strong>
+                  <span>You · {meetingMicEnabled ? "Mic on" : "Mic off"}</span>
+                </div>
+              </article>
+
+              {meetingParticipants.map((participant) => {
+                const connectionState =
+                  peerStates[participant.id]?.connectionState || "connecting";
+                return (
+                  <article className="meeting-video-tile" key={participant.id}>
+                    {remoteVideoStreams[participant.id] ? (
+                      <video
+                        ref={(element) => {
+                          if (
+                            element &&
+                            element.srcObject !==
+                              remoteVideoStreams[participant.id]
+                          ) {
+                            element.srcObject =
+                              remoteVideoStreams[participant.id];
+                          }
+                        }}
+                        autoPlay
+                        muted
+                        playsInline
+                      />
+                    ) : (
+                      <div className="meeting-video-placeholder">
+                        Camera unavailable
+                      </div>
+                    )}
+                    <div className="meeting-video-caption">
+                      <strong>{participant.name}</strong>
+                      <span>
+                        {connectionState === "connected"
+                          ? "Connected"
+                          : connectionState === "failed" ||
+                              connectionState === "disconnected"
+                            ? "Connection lost"
+                            : "Connecting…"}
+                      </span>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </>
+        )}
+        {meetingCallError && (
+          <p className="meeting-call-error" role="alert">
+            {meetingCallError}
+          </p>
         )}
       </section>
 

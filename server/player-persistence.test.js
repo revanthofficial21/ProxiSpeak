@@ -1,8 +1,10 @@
 const {
   markPlayerConnected,
   markPlayerDisconnected,
+  normalizeAvatarPrefs,
   positionFields,
   restoreReturningPlayer,
+  saveAvatarPrefs,
 } = require("./player-persistence");
 
 let failures = 0;
@@ -125,6 +127,67 @@ async function runTests() {
       position.location[1] === 240
   );
 
+  const normalizedPrefs = normalizeAvatarPrefs({
+    color: "coral",
+    ignored: "value",
+  });
+  check(
+    "avatar preferences accept only allow-listed values",
+    normalizedPrefs?.color === "coral" &&
+      Object.keys(normalizedPrefs).length === 1 &&
+      normalizeAvatarPrefs({ color: "#123456" }) === null &&
+      normalizeAvatarPrefs(["mint"]) === null
+  );
+
+  const avatarRecord = {
+    socketId: "avatar-session",
+    connected: true,
+    name: "Avatar Player",
+    x: 180,
+    y: 240,
+    location: [180, 240],
+  };
+  const avatarCollection = createSessionStatusCollection([avatarRecord]);
+  const avatarSave = await saveAvatarPrefs(
+    avatarCollection,
+    "avatar-session",
+    { color: "violet" }
+  );
+  const avatarUpdate = avatarCollection.updates[0];
+  check(
+    "avatar preference persistence only updates the active record's preference field",
+    avatarSave.matchedCount === 1 &&
+      avatarRecord.avatarPrefs?.color === "violet" &&
+      avatarRecord.socketId === "avatar-session" &&
+      avatarRecord.connected === true &&
+      avatarRecord.x === 180 &&
+      avatarRecord.y === 240 &&
+      JSON.stringify(Object.keys(avatarUpdate.update.$set)) ===
+        JSON.stringify(["avatarPrefs"]) &&
+      avatarUpdate.filter.socketId === "avatar-session" &&
+      avatarUpdate.filter.connected === true
+  );
+
+  const inactiveAvatarRecord = {
+    ...avatarRecord,
+    socketId: "inactive-avatar-session",
+    connected: false,
+    avatarPrefs: { color: "gold" },
+  };
+  const inactiveAvatarCollection = createSessionStatusCollection([
+    inactiveAvatarRecord,
+  ]);
+  const inactiveAvatarSave = await saveAvatarPrefs(
+    inactiveAvatarCollection,
+    "inactive-avatar-session",
+    { color: "blue" }
+  );
+  check(
+    "avatar preferences cannot modify an inactive session",
+    inactiveAvatarSave.matchedCount === 0 &&
+      inactiveAvatarRecord.avatarPrefs.color === "gold"
+  );
+
   const sessionRecords = [];
   const statusCollection = createSessionStatusCollection(sessionRecords);
   const connectedPlayer = {
@@ -209,6 +272,7 @@ async function runTests() {
     x: 180,
     y: 240,
     connected: false,
+    avatarPrefs: { color: "coral" },
   };
   const temporaryRecord = {
     _id: "temporary-record",
@@ -226,6 +290,8 @@ async function runTests() {
       restored?.y === 240 &&
       restored?.location[0] === 180 &&
       restored?.location[1] === 240 &&
+      restored?.avatarPrefs?.color === "coral" &&
+      returningRecord.avatarPrefs.color === "coral" &&
       returningRecord.socketId === "new-socket" &&
       returningRecord.connected === true &&
       documents.length === 1 &&
@@ -239,6 +305,7 @@ async function runTests() {
     x: 300,
     y: 200,
     connected: true,
+    avatarPrefs: { color: "gold" },
   };
   const noRestore = await restore(
     createCollection([activeRecord]),
@@ -247,7 +314,9 @@ async function runTests() {
   );
   check(
     "an active player's record is never restored or claimed",
-    noRestore === null && activeRecord.socketId === "active-socket"
+    noRestore === null &&
+      activeRecord.socketId === "active-socket" &&
+      activeRecord.avatarPrefs.color === "gold"
   );
 
   const duplicateRecords = [
