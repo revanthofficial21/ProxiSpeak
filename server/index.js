@@ -6,6 +6,11 @@ const cors = require("cors");
 const { Server } = require("socket.io");
 require("dotenv").config();
 const { MongoClient } = require("mongodb");
+const {
+  markPlayerConnected,
+  markPlayerDisconnected,
+  restoreReturningPlayer,
+} = require("./lib/player-persistence");
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -168,25 +173,7 @@ io.on("connection", (socket) => {
   players.set(socket.id, player);
 
   // Save the player's initial position.
-  db.collection("players")
-    .updateOne(
-      { socketId: socket.id },
-      {
-        $set: {
-          socketId: socket.id,
-          name: player.name,
-          x: player.x,
-          y: player.y,
-          location: [player.x, player.y],
-          connected: true,
-          updatedAt: new Date(),
-        },
-        $setOnInsert: {
-          createdAt: new Date(),
-        },
-      },
-      { upsert: true }
-    )
+  markPlayerConnected(db.collection("players"), player)
     .then(() => syncProximity(socket.id, player))
     .catch((error) => {
       console.error("Failed to save player:", error.message);
@@ -250,11 +237,37 @@ io.on("connection", (socket) => {
     currentPlayer.name = name.trim().slice(0, 30);
 
     try {
+      // If this name has a saved (inactive) record, claim it and restore the
+      // player's previous position.
+      const returningPlayer = await restoreReturningPlayer(
+        db.collection("players"),
+        currentPlayer.name,
+        socket.id,
+        (savedPlayer) => ({
+          x: Math.max(
+            PLAYER_RADIUS,
+            Math.min(WORLD_WIDTH - PLAYER_RADIUS, savedPlayer.x)
+          ),
+          y: Math.max(
+            PLAYER_RADIUS,
+            Math.min(WORLD_HEIGHT - PLAYER_RADIUS, savedPlayer.y)
+          ),
+        })
+      );
+
+      if (returningPlayer) {
+        currentPlayer.x = returningPlayer.x;
+        currentPlayer.y = returningPlayer.y;
+      }
+
       const result = await db.collection("players").updateOne(
         { socketId: socket.id },
         {
           $set: {
             name: currentPlayer.name,
+            x: currentPlayer.x,
+            y: currentPlayer.y,
+            location: [currentPlayer.x, currentPlayer.y],
             updatedAt: new Date(),
             connected: true,
           },
@@ -366,22 +379,11 @@ io.on("connection", (socket) => {
       proximityState.delete(socket.id);
     }
 
-    db.collection("players")
-      .updateOne(
-        { socketId: socket.id },
-        {
-          $set: {
-            connected: false,
-            updatedAt: new Date(),
-          },
-        }
-      )
-      .catch((error) => {
-        console.error(
-          "Failed to update player status:",
-          error.message
-        );
-      });
+    markPlayerDisconnected(db.collection("players"), socket.id).catch(
+      (error) => {
+        console.error("Failed to update player status:", error.message);
+      }
+    );
 
     io.emit("player:left", socket.id);
     console.log(`Player disconnected: ${socket.id}`);
