@@ -436,3 +436,30 @@ button:disabled {
 .audio-panel button + button {
   margin-left: 8px;
 }
+
+/* --- Avatar colour picker --- */
+.avatar-color-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #cbd5e1;
+}
+
+.avatar-color-swatch {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid #35445a;
+}
+
+.avatar-color-label input[type="color"] {
+  width: 34px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #35445a;
+  border-radius: 6px;
+  background: #101827;
+  cursor: pointer;
+}

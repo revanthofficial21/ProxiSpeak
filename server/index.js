@@ -40,6 +40,8 @@ const proximityState = new Map();
 const WORLD_WIDTH = 1000;
 const WORLD_HEIGHT = 600;
 const PROXIMITY_RADIUS = 100;
+const DEFAULT_AVATAR_COLOR = "#6ee7b7";
+const HEX_COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const PLAYER_RADIUS = 20;
 const SPAWN_SPACINGS = [80, 60, 40];
 const SPAWN_MARGIN = PLAYER_RADIUS + 20;
@@ -87,7 +89,13 @@ app.get("/", (req, res) => {
 });
 
 function publicPlayer(player) {
-  return { id: player.id, name: player.name, x: player.x, y: player.y };
+  return {
+    id: player.id,
+    name: player.name,
+    avatarColor: player.avatarColor || DEFAULT_AVATAR_COLOR,
+    x: player.x,
+    y: player.y,
+  };
 }
 
 function isNearby(aId, bId) {
@@ -116,13 +124,14 @@ async function syncProximity(socketId, player) {
         $maxDistance: PROXIMITY_RADIUS,
       },
     })
-    .project({ _id: 0, socketId: 1, name: 1, x: 1, y: 1 })
+    .project({ _id: 0, socketId: 1, name: 1, avatarColor: 1, x: 1, y: 1 })
     .toArray();
 
   const nearbyList = nearbyPlayers.map((nearbyPlayer) => ({
     id: nearbyPlayer.socketId,
     socketId: nearbyPlayer.socketId,
     name: nearbyPlayer.name,
+    avatarColor: nearbyPlayer.avatarColor || DEFAULT_AVATAR_COLOR,
     x: nearbyPlayer.x,
     y: nearbyPlayer.y,
   }));
@@ -167,6 +176,7 @@ io.on("connection", (socket) => {
     id: socket.id,
     socketId: socket.id,
     name: "",
+    avatarColor: DEFAULT_AVATAR_COLOR,
     ...spawnPosition,
   };
 
@@ -208,6 +218,60 @@ io.on("connection", (socket) => {
 
   socket.on("webrtc:leave", (data) => {
     relaySignal("webrtc:leave", socket.id, data && data.targetId, {});
+  });
+
+  // Save the player's avatar color.
+  socket.on("player:setAvatarColor", async (color, callback) => {
+    if (typeof color !== "string" || !HEX_COLOR_PATTERN.test(color)) {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "Invalid avatar color" });
+      }
+      return;
+    }
+
+    const currentPlayer = players.get(socket.id);
+    if (!currentPlayer) {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "Player not found" });
+      }
+      return;
+    }
+
+    try {
+      const result = await db.collection("players").updateOne(
+        { socketId: socket.id },
+        {
+          $set: {
+            avatarColor: color,
+            updatedAt: new Date(),
+            connected: true,
+          },
+        }
+      );
+
+      if (result.matchedCount === 0) {
+        if (typeof callback === "function") {
+          callback({
+            success: false,
+            error: "Player record not found in MongoDB",
+          });
+        }
+        return;
+      }
+
+      const updatedPlayer = { ...currentPlayer, avatarColor: color };
+      players.set(socket.id, updatedPlayer);
+      io.emit("player:avatarColorUpdated", publicPlayer(updatedPlayer));
+
+      if (typeof callback === "function") {
+        callback({ success: true, avatarColor: color });
+      }
+    } catch (error) {
+      console.error("Failed to save avatar color:", error.message);
+      if (typeof callback === "function") {
+        callback({ success: false, error: error.message });
+      }
+    }
   });
 
   // Save the player's name.

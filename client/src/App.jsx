@@ -8,6 +8,7 @@ const WORLD_HEIGHT = 600;
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "http://localhost:3000";
 const SPEED = 240;
 const AVATAR_RADIUS = 20;
+const DEFAULT_AVATAR_COLOR = "#6ee7b7";
 
 const obstacles = [
   { x: 100, y: 120, width: 120, height: 55 },
@@ -74,6 +75,7 @@ export default function App() {
   const [players, setPlayers] = useState([]);
   const [nearbyPlayers, setNearbyPlayers] = useState([]);
   const [playerName, setPlayerName] = useState("");
+  const [avatarColor, setAvatarColor] = useState(DEFAULT_AVATAR_COLOR);
   const [savedName, setSavedName] = useState("");
   const [nameError, setNameError] = useState("");
   const {
@@ -131,6 +133,18 @@ export default function App() {
       }
 
       setPlayers(Array.from(playersRef.current.values()));
+    });
+    client.on("player:avatarColorUpdated", (player) => {
+      if (!player || typeof player.id !== "string") return;
+      const existing = playersRef.current.get(player.id);
+      playersRef.current.set(
+        player.id,
+        existing ? { ...existing, avatarColor: player.avatarColor } : player
+      );
+      setPlayers(Array.from(playersRef.current.values()));
+      if (player.id === client.id) {
+        setAvatarColor(player.avatarColor || DEFAULT_AVATAR_COLOR);
+      }
     });
     client.on("player:nearby", (list) => {
       const safeList = Array.isArray(list)
@@ -304,11 +318,12 @@ export default function App() {
 
         ctx.beginPath();
         ctx.arc(player.x, player.y, AVATAR_RADIUS, 0, Math.PI * 2);
-        ctx.fillStyle = isMe ? "#6ee7b7" : "#93c5fd";
+        const playerColor = player.avatarColor || DEFAULT_AVATAR_COLOR;
+        ctx.fillStyle = playerColor;
         ctx.fill();
         ctx.beginPath();
         ctx.arc(player.x, player.y, 27, 0, Math.PI * 2);
-        ctx.strokeStyle = isMe ? "#34d399" : "#60a5fa";
+        ctx.strokeStyle = playerColor;
         ctx.globalAlpha = 0.5;
         ctx.stroke();
         ctx.globalAlpha = 1;
@@ -362,6 +377,20 @@ export default function App() {
     });
   };
 
+  const handleSetAvatarColor = (event) => {
+    const color = event.target.value;
+    setAvatarColor(color);
+
+    const client = socketRef.current;
+    if (!client?.connected) return;
+
+    client.emit("player:setAvatarColor", color, (response) => {
+      if (!response?.success) {
+        setNameError(response?.error || "Could not save your avatar colour.");
+      }
+    });
+  };
+
   return (
     <main className="app">
       <header className="topbar">
@@ -407,6 +436,22 @@ export default function App() {
             maxLength={30}
             onChange={(event) => setPlayerName(event.target.value)}
           />
+          <label htmlFor="avatar-color" className="avatar-color-label">
+            <span
+              className="avatar-color-swatch"
+              style={{ backgroundColor: avatarColor }}
+              aria-hidden="true"
+            />
+            Avatar colour
+            <input
+              id="avatar-color"
+              type="color"
+              value={avatarColor}
+              disabled={!connected}
+              onChange={handleSetAvatarColor}
+              aria-label="Choose avatar colour"
+            />
+          </label>
           <button type="submit" disabled={!connected}>
             Save name
           </button>
