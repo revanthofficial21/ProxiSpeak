@@ -6,14 +6,14 @@ const { MongoClient } = require("mongodb");
 require("dotenv").config();
 
 const { getNearbyPlayers, PROXIMITY_RADIUS } = require("./proximity");
+const { initializeRoomCatalog } = require("./roomCatalog");
 
 const app = express();
 const httpServer = http.createServer(app);
-const mongoClient = new MongoClient(process.env.MONGODB_URI, {
-  serverSelectionTimeoutMS: 10000,
-});
+let mongoClient;
 
 let db;
+let availableRooms = [];
 
 app.use(cors());
 app.use(express.json());
@@ -124,6 +124,10 @@ app.get("/", (req, res) => {
     message: "ProxiSpeak backend is running",
     connectedPlayers: players.size,
   });
+});
+
+app.get("/api/rooms", (req, res) => {
+  res.json({ rooms: availableRooms });
 });
 
 io.on("connection", (socket) => {
@@ -494,10 +498,41 @@ io.on("connection", (socket) => {
 
 const PORT = process.env.PORT || 3000;
 
+function safeErrorMessage(error) {
+  let message = error instanceof Error ? error.message : String(error);
+  const uri = process.env.MONGODB_URI;
+  if (uri) message = message.split(uri).join("[REDACTED MONGODB_URI]");
+  return message.replace(
+    /mongodb(?:\+srv)?:\/\/[^\s"'<>]+/gi,
+    "mongodb://[REDACTED]"
+  );
+}
+
 async function startServer() {
+  let startupPhase = "MongoDB configuration";
+
   try {
+    const mongoUri = process.env.MONGODB_URI;
+    if (!mongoUri) {
+      throw new Error("MONGODB_URI is not set in server/.env");
+    }
+    if (!/^mongodb(?:\+srv)?:\/\//i.test(mongoUri)) {
+      throw new Error(
+        "MONGODB_URI must use the mongodb:// or mongodb+srv:// scheme"
+      );
+    }
+
+    mongoClient = new MongoClient(mongoUri, {
+      serverSelectionTimeoutMS: 10000,
+    });
+
+    startupPhase = "MongoDB connection";
     await mongoClient.connect();
+
+    startupPhase = "MongoDB initialization";
     db = mongoClient.db("proxispeak");
+    availableRooms = await initializeRoomCatalog(db);
+    console.log("Room catalog loaded:", availableRooms.length);
 
     const collection = db.collection("players");
     const cleanupResult = await collection.updateMany(
@@ -522,11 +557,30 @@ async function startServer() {
     console.log("MongoDB 2d geospatial index ready!");
     console.log("MongoDB connected successfully!");
 
+    startupPhase = "HTTP server startup";
+    httpServer.once("error", (error) => {
+      console.error("HTTP server startup failed:", safeErrorMessage(error));
+      process.exitCode = 1;
+      mongoClient.close().catch((closeError) => {
+        console.error(
+          "MongoDB connection cleanup failed:",
+          safeErrorMessage(closeError)
+        );
+      });
+    });
     httpServer.listen(PORT, () => {
       console.log(`ProxiSpeak server running at http://localhost:${PORT}`);
     });
   } catch (error) {
-    console.error("Server startup failed:", error.message);
+    console.error(`${startupPhase} failed:`, safeErrorMessage(error));
+    if (mongoClient) {
+      await mongoClient.close().catch((closeError) => {
+        console.error(
+          "MongoDB connection cleanup failed:",
+          safeErrorMessage(closeError)
+        );
+      });
+    }
     process.exitCode = 1;
   }
 }

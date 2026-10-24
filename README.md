@@ -129,6 +129,12 @@ The `players` collection (MongoDB):
 | `connected` | boolean | Whether the player is currently connected |
 | `createdAt` / `updatedAt` | Date | Timestamps |
 
+The `rooms` collection stores the available room catalog. The server creates
+the built-in rooms (`open-world`, `meeting-room`, and `lounge`) idempotently
+with unique IDs and room names, then serves the catalog at `GET /api/rooms`.
+The frontend displays the available room names. This catalog does not yet
+assign players to rooms or isolate movement, chat, proximity, or voice.
+
 ## 8. Realtime Events
 
 **Client → Server**

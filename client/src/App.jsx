@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import useVoiceChat from "./useVoiceChat";
 import "./App.css";
@@ -78,11 +78,24 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [chatError, setChatError] = useState("");
+  const [rooms, setRooms] = useState([]);
+  const [activeRoomId, setActiveRoomId] = useState("");
+  const [roomsLoading, setRoomsLoading] = useState(true);
+  const [roomsError, setRoomsError] = useState("");
   const [sendingChat, setSendingChat] = useState(false);
   const [displayName, setDisplayName] = useState("");
   const [profileError, setProfileError] = useState("");
   const [savingName, setSavingName] = useState(false);
   const [savingColor, setSavingColor] = useState(false);
+  const getLocalPlayerPosition = useCallback(() => {
+    const playerId = socketRef.current?.id;
+    const player = playerId ? playersRef.current.get(playerId) : null;
+    return player &&
+      Number.isFinite(player.x) &&
+      Number.isFinite(player.y)
+      ? player
+      : null;
+  }, []);
   const profilePlayer = players.find((player) => player.id === socket?.id);
   const avatarColor = profilePlayer?.avatarColor || DEFAULT_AVATAR_COLOR;
   const nearbyPlayerIds = new Set(nearbyPlayers.map((player) => player.id));
@@ -97,11 +110,17 @@ export default function App() {
   });
   const {
     voiceEnabled,
+    muted,
+    speakerVolume,
+    audioOutputBlocked,
     voiceStatus,
     peerStates,
     enableVoice,
     disableVoice,
-  } = useVoiceChat(socket, nearbyPlayers);
+    toggleMute,
+    updateSpeakerVolume,
+    resumeAudio,
+  } = useVoiceChat(socket, nearbyPlayers, getLocalPlayerPosition);
 
   useEffect(() => {
     const client = io(SERVER_URL);
@@ -195,6 +214,54 @@ export default function App() {
     const log = chatLogRef.current;
     if (log) log.scrollTop = log.scrollHeight;
   }, [chatMessages]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadRooms() {
+      try {
+        const response = await fetch(
+          `${SERVER_URL.replace(/\/$/, "")}/api/rooms`,
+          { signal: controller.signal }
+        );
+        if (!response.ok) {
+          throw new Error(`Room list request failed (${response.status})`);
+        }
+
+        const result = await response.json();
+        if (!Array.isArray(result.rooms)) {
+          throw new Error("Server returned an invalid room list");
+        }
+
+        const availableRooms = result.rooms.filter(
+          (room) =>
+            room &&
+            typeof room.id === "string" &&
+            typeof room.name === "string"
+        );
+        setRooms(availableRooms);
+        setActiveRoomId((currentRoomId) =>
+          availableRooms.some((room) => room.id === currentRoomId)
+            ? currentRoomId
+            : availableRooms.find((room) => room.id === "open-world")?.id ||
+              availableRooms[0]?.id ||
+              ""
+        );
+        setRoomsError("");
+      } catch (error) {
+        if (error.name === "AbortError") return;
+        console.error("Could not load available rooms:", error);
+        setRoomsError("Could not load available rooms. Try refreshing.");
+      } finally {
+        if (!controller.signal.aborted) setRoomsLoading(false);
+      }
+    }
+
+    loadRooms();
+    return () => controller.abort();
+  }, []);
+
+  const activeRoom = rooms.find((room) => room.id === activeRoomId);
 
   const saveDisplayName = (event) => {
     event.preventDefault();
@@ -524,12 +591,56 @@ export default function App() {
         )}
       </form>
 
+      <section className="rooms-panel" aria-labelledby="rooms-heading">
+        <div className="rooms-heading">
+          <div>
+            <strong id="rooms-heading">Available rooms</strong>
+            <p>Room catalog from the server</p>
+          </div>
+        </div>
+        {roomsLoading ? (
+          <p className="rooms-message" role="status">
+            Loading rooms…
+          </p>
+        ) : roomsError ? (
+          <p className="rooms-error" role="alert">
+            {roomsError}
+          </p>
+        ) : rooms.length === 0 ? (
+          <p className="rooms-message">No rooms are available.</p>
+        ) : (
+          <ul className="rooms-list">
+            {rooms.map((room) => (
+              <li key={room.id}>
+                <button
+                  type="button"
+                  className={`room-button${room.id === activeRoomId ? " selected" : ""}`}
+                  aria-pressed={room.id === activeRoomId}
+                  onClick={() => setActiveRoomId(room.id)}
+                >
+                  {room.name}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {activeRoom && (
+          <p className="active-room-label" aria-live="polite">
+            Selected room: <strong>{activeRoom.name}</strong>
+          </p>
+        )}
+        <p className="rooms-note">
+          Room selection is currently a UI preference; players, chat, and voice
+          remain in the existing shared world.
+        </p>
+      </section>
+
       <div className="world-layout">
         <section className="world-card">
           <div className="world-toolbar">
             <div>
               <span className="live-dot" />
-              <strong>Open World</strong>
+              <strong>{activeRoom?.name || "Open World"}</strong>
               <span className="world-subtitle"> · 2D proximity space</span>
             </div>
             <span className="coordinate-label">1000 × 600</span>
@@ -732,6 +843,43 @@ export default function App() {
         >
           {voiceEnabled ? "Disable Microphone" : "Enable Microphone"}
         </button>
+        {voiceEnabled && (
+          <div className="audio-controls">
+            {audioOutputBlocked && (
+              <button
+                type="button"
+                className="audio-resume-button"
+                onClick={resumeAudio}
+              >
+                Resume audio
+              </button>
+            )}
+            <button
+              type="button"
+              className={`audio-mute-button${muted ? " muted" : ""}`}
+              aria-pressed={muted}
+              onClick={toggleMute}
+            >
+              {muted ? "Unmute microphone" : "Mute microphone"}
+            </button>
+            <div className="speaker-volume">
+              <div className="speaker-volume-label">
+                <label htmlFor="speaker-volume">Speaker volume</label>
+                <output htmlFor="speaker-volume">{speakerVolume}%</output>
+              </div>
+              <input
+                id="speaker-volume"
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value={speakerVolume}
+                aria-valuetext={`${speakerVolume}%`}
+                onChange={(event) => updateSpeakerVolume(event.target.value)}
+              />
+            </div>
+          </div>
+        )}
         <p>
           Enable your microphone and move within 100 pixels of another player
           to connect.
