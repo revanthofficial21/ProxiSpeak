@@ -198,6 +198,9 @@ export default function App() {
       setNearbyPlayers((current) =>
         current.filter((player) => player.id !== playerId)
       );
+      setMeetingParticipants((current) =>
+        current.filter((p) => p.id !== playerId)
+      );
     });
     client.on("chat:message", (message) => {
       if (!message || typeof message.text !== "string") return;
@@ -205,6 +208,20 @@ export default function App() {
     });
     client.on("room:state", ({ room } = {}) => {
       if (typeof room === "string") setActiveRoomId(room);
+    });
+    client.on("meeting:participant-joined", (participant) => {
+      if (!participant || typeof participant.id !== "string") return;
+      setMeetingParticipants((current) =>
+        current.some((p) => p.id === participant.id)
+          ? current
+          : [...current, participant]
+      );
+    });
+    client.on("meeting:participant-left", (participantId) => {
+      if (typeof participantId !== "string") return;
+      setMeetingParticipants((current) =>
+        current.filter((p) => p.id !== participantId)
+      );
     });
 
     return () => {

@@ -500,8 +500,17 @@ io.on("connection", (socket) => {
       sentAt: new Date().toISOString(),
     };
 
-    // Chat is scoped to the sender's space.
-    io.to(roomChannel(sender.room)).emit("chat:message", message);
+    // Chat is scoped to the sender's space. Guard the channel: roomChannel()
+    // returns null for an unknown room, and io.to(null) would silently drop it.
+    const channel = roomChannel(sender.room);
+    if (!channel) {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "You are not in a valid space" });
+      }
+      return;
+    }
+
+    io.to(channel).emit("chat:message", message);
 
     if (typeof callback === "function") {
       callback({ success: true });
@@ -584,11 +593,29 @@ io.on("connection", (socket) => {
       meetingCallParticipants,
       players
     );
+
+    const channel = roomChannel(currentPlayer.room);
+    if (channel) {
+      socket.to(channel).emit("meeting:participant-joined", {
+        id: currentPlayer.id,
+        name: currentPlayer.name || `Player ${currentPlayer.id.slice(0, 4)}`,
+      });
+    }
+
     reply({ success: true, participants });
   });
 
   socket.on("meeting:leave", (callback) => {
+    const currentPlayer = players.get(socket.id);
     meetingCallParticipants.delete(socket.id);
+
+    if (currentPlayer) {
+      const channel = roomChannel(currentPlayer.room);
+      if (channel) {
+        socket.to(channel).emit("meeting:participant-left", socket.id);
+      }
+    }
+
     if (typeof callback === "function") callback({ success: true });
   });
 

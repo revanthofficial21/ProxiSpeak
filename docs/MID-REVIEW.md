@@ -102,8 +102,9 @@ Week 3/4 candidate.
 **Deliverable 1 — Proximity Calculations: COMPLETE.**
 `node tests/proximity.test.js` -> all 7 pass, including "default radius is 100px",
 "only B is within 100px of A" and "a player exactly 100px away counts as nearby".
-`relaySignal()` gates every `webrtc:*` event on `isNearby(fromId, toId)`, so offers
-and answers only ever reach players inside the 100px radius.
+`relaySignal()` gates every `webrtc:*` event on `canRelayWebRtcSignal(...)`, so
+offers and answers only reach players in the same space inside the 100px radius
+(or members of the Meeting Room call).
 
 **Deliverable 2 — WebRTC Integration: COMPLETE.**
 `client/src/useVoiceChat.js` uses `getUserMedia`, `RTCPeerConnection`,
@@ -111,14 +112,12 @@ createOffer/createAnswer, set(Local|Remote)Description, addIceCandidate and
 `ontrack`. All five `webrtc:*` signaling events are relayed (proximity-gated) by
 `server/index.js`.
 
-**Deliverable 3 — Spatial Audit: built, run pending.**
-The MongoDB run (`npm run audit`) could not be executed in the build environment:
-there is no `mongod`, and the sandbox network blocks the in-memory server's binary
-download. Run it locally or against Atlas and capture the log.
-
-A fallback benchmark is included — `server/spatial-benchmark.js` mirrors the same
-100px filter in pure JS so the correctness and latency of the grouping can still
-be shown. Actual output:
+**Deliverable 3 — Spatial Audit: built, two ways to run it.**
+- `npm run audit` — the MongoDB `$near` proof. It could not be executed in the build
+  environment (no `mongod`; the sandbox blocks the in-memory server's binary
+  download). Run it locally or against Atlas and capture the log.
+- `npm run audit:local` — a MongoDB-free benchmark of the same 100px filter
+  (`server/spatial-benchmark.js`). Latest output:
 
 ```
 === ProxiSpeak Spatial Benchmark (in-memory) ===
@@ -126,7 +125,7 @@ players seeded : 250
 queries run    : 200
 radius         : 100px
 correctness    : 200/200 PASS
-latency (ms)   : min 0.0224  avg 0.0493  p50 0.0240  p95 0.1155  max 1.4258
+latency (ms)   : min 0.0243  avg 0.0582  p50 0.0260  p95 0.1929  max 1.4380
 budget         : 20ms  -> PASS
 RESULT: PASS
 ```
@@ -135,3 +134,18 @@ RESULT: PASS
 Run-book above; needs two browsers. Capture the screen recording.
 
 The consolidated pack is `Mid-Review-Evidence.docx`.
+
+---
+
+## Current state (revanth @ 71a2ffd+)
+
+**Test suites — 6/6 pass:** `proximity`, `player-persistence`, `roomCatalog`,
+`rooms`, `meeting-call`, `chat` (all run by `npm test`).
+
+**Also built since the mid-review:** people list, world chat, the space catalogue
+with real room scoping (`player:joinRoom`), and the Meeting Room call
+(`meeting:join` / `meeting:leave` with live participant updates). Switching space
+scopes proximity, chat, and WebRTC to that space.
+
+**Still to run (needs a machine with MongoDB and two browsers):** `npm run audit`
+and the two-browser Audio Check.
