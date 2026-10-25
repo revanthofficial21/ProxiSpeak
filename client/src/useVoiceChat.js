@@ -1,4 +1,3 @@
-```javascript
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const ICE_SERVERS = {
@@ -385,4 +384,3 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
     resumeAudio,
   };
 }
-```
