@@ -93,3 +93,11 @@ To prepare a checklist for testing basic WebRTC functionality in different brows
 
 ### Conclusion
 A browser compatibility checklist has been prepared to organize future testing. Results will be recorded only after each test has been performed.
+
+## 9. ProxiSpeak Local Testing
+
+- Frontend: Started successfully.
+- Backend: Connected successfully.
+- Two-player connection: Successful.
+- Player movement: Successful.
+- End-to-end WebRTC voice communication: Pending.
