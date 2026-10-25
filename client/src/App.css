@@ -488,3 +488,65 @@ button:disabled {
   background: #b45309;
   border-color: #b45309;
 }
+
+/* --- People / Spaces / Chat panels --- */
+.people-panel,
+.rooms-panel,
+.chat-panel {
+  background: #101827;
+  border: 1px solid #1f2a3a;
+  border-radius: 14px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.people-panel h2,
+.rooms-panel h2,
+.chat-panel h2 {
+  margin: 0;
+  font-size: 15px;
+  color: #e2e8f0;
+}
+
+.people-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.people-item { display: flex; align-items: center; gap: 8px; }
+.people-avatar { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #35445a; flex: none; }
+.people-name { font-size: 13px; color: #cbd5e1; }
+
+.rooms-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.room-button {
+  background: #16202e;
+  border: 1px solid #2a3a4f;
+  color: #cbd5e1;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.room-button.selected { background: #1f6feb; border-color: #1f6feb; color: #ffffff; }
+
+.panel-note { margin: 0; font-size: 11px; color: #64748b; }
+.panel-empty { margin: 0; font-size: 12px; color: #94a3b8; }
+.panel-error { margin: 0; font-size: 12px; color: #f87171; }
+
+.chat-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.chat-empty { font-size: 12px; color: #64748b; }
+.chat-message { display: flex; gap: 8px; align-items: flex-start; }
+.chat-avatar { width: 18px; height: 18px; border-radius: 50%; border: 1px solid #35445a; flex: none; margin-top: 2px; }
+.chat-body { display: flex; flex-direction: column; }
+.chat-sender { font-size: 11px; color: #94a3b8; }
+.chat-text { font-size: 13px; color: #e2e8f0; word-break: break-word; }
+
+.chat-compose { display: flex; gap: 8px; }
+.chat-compose input { flex: 1; }

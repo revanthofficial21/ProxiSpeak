@@ -78,6 +78,12 @@ export default function App() {
   const [avatarColor, setAvatarColor] = useState(DEFAULT_AVATAR_COLOR);
   const [savedName, setSavedName] = useState("");
   const [nameError, setNameError] = useState("");
+  const [messages, setMessages] = useState([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatError, setChatError] = useState("");
+  const [rooms, setRooms] = useState([]);
+  const [activeRoomId, setActiveRoomId] = useState("");
+  const [roomsError, setRoomsError] = useState("");
   const {
     voiceEnabled,
     voiceStatus,
@@ -190,6 +196,10 @@ export default function App() {
       setNearbyPlayers((current) =>
         current.filter((player) => player.id !== playerId)
       );
+    });
+    client.on("chat:message", (message) => {
+      if (!message || typeof message.text !== "string") return;
+      setMessages((current) => [...current.slice(-199), message]);
     });
 
     return () => {
@@ -395,6 +405,67 @@ export default function App() {
     });
   };
 
+  const handleSendChat = (event) => {
+    event.preventDefault();
+    const text = chatInput.trim();
+    if (!text) return;
+
+    const client = socketRef.current;
+    if (!client?.connected) {
+      setChatError("Connect to the server before chatting.");
+      return;
+    }
+
+    client.emit("chat:send", text, (response) => {
+      if (!response?.success) {
+        setChatError(response?.error || "Could not send your message.");
+        return;
+      }
+      setChatInput("");
+      setChatError("");
+    });
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRooms() {
+      try {
+        const response = await fetch(
+          `${SERVER_URL.replace(/\/$/, "")}/api/rooms`
+        );
+        if (!response.ok) {
+          throw new Error(`Space list failed (${response.status})`);
+        }
+        const result = await response.json();
+        if (cancelled) return;
+
+        const list = Array.isArray(result.rooms)
+          ? result.rooms.filter(
+              (room) =>
+                room &&
+                typeof room.id === "string" &&
+                typeof room.name === "string"
+            )
+          : [];
+
+        setRooms(list);
+        setActiveRoomId((current) =>
+          list.some((room) => room.id === current)
+            ? current
+            : list[0]?.id || ""
+        );
+      } catch (error) {
+        if (!cancelled) setRoomsError(error.message);
+      }
+    }
+
+    loadRooms();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <main className="app">
       <header className="topbar">
@@ -559,6 +630,100 @@ export default function App() {
             ))}
           </ul>
         )}
+      </section>
+
+      <section className="people-panel">
+        <h2>People online</h2>
+        {players.length === 0 ? (
+          <p className="panel-empty">No one here yet.</p>
+        ) : (
+          <ul className="people-list">
+            {players.map((player) => (
+              <li key={player.id} className="people-item">
+                <span
+                  className="people-avatar"
+                  style={{
+                    backgroundColor:
+                      player.avatarColor || DEFAULT_AVATAR_COLOR,
+                  }}
+                  aria-hidden="true"
+                />
+                <span className="people-name">
+                  {player.id === socket?.id
+                    ? `${player.name || "You"} (you)`
+                    : player.name || `Player ${player.id.slice(0, 4)}`}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="rooms-panel">
+        <h2>Spaces</h2>
+        {roomsError ? (
+          <p className="panel-error">{roomsError}</p>
+        ) : rooms.length === 0 ? (
+          <p className="panel-empty">Loading spaces…</p>
+        ) : (
+          <div className="rooms-list">
+            {rooms.map((room) => (
+              <button
+                key={room.id}
+                type="button"
+                className={`room-button${
+                  room.id === activeRoomId ? " selected" : ""
+                }`}
+                aria-pressed={room.id === activeRoomId}
+                onClick={() => setActiveRoomId(room.id)}
+              >
+                {room.name}
+              </button>
+            ))}
+          </div>
+        )}
+        <p className="panel-note">
+          Spaces are a catalogue for now — everyone still shares one world.
+        </p>
+      </section>
+
+      <section className="chat-panel">
+        <h2>World chat</h2>
+        <ul className="chat-log">
+          {messages.length === 0 ? (
+            <li className="chat-empty">No messages yet.</li>
+          ) : (
+            messages.map((message) => (
+              <li key={message.id} className="chat-message">
+                <span
+                  className="chat-avatar"
+                  style={{
+                    backgroundColor:
+                      message.avatarColor || DEFAULT_AVATAR_COLOR,
+                  }}
+                  aria-hidden="true"
+                />
+                <span className="chat-body">
+                  <span className="chat-sender">{message.senderName}</span>
+                  <span className="chat-text">{message.text}</span>
+                </span>
+              </li>
+            ))
+          )}
+        </ul>
+        <form className="chat-compose" onSubmit={handleSendChat}>
+          <input
+            type="text"
+            value={chatInput}
+            placeholder="Type a message…"
+            maxLength={500}
+            onChange={(event) => setChatInput(event.target.value)}
+          />
+          <button type="submit" disabled={!connected}>
+            Send
+          </button>
+        </form>
+        {chatError && <p className="panel-error">{chatError}</p>}
       </section>
     </main>
   );

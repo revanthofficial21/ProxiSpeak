@@ -11,6 +11,7 @@ const {
   markPlayerDisconnected,
   restoreReturningPlayer,
 } = require("./lib/player-persistence");
+const { initializeRoomCatalog } = require("./lib/roomCatalog");
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -20,9 +21,16 @@ const mongoClient = new MongoClient(process.env.MONGODB_URI, {
 });
 
 let db;
+let availableRooms = [];
 
 app.use(cors());
 app.use(express.json());
+
+// The room catalog. This is a list only — players are not yet scoped to a
+// room, so everyone still shares one world.
+app.get("/api/rooms", (req, res) => {
+  res.json({ rooms: availableRooms });
+});
 
 const io = new Server(httpServer, {
   cors: {
@@ -434,6 +442,34 @@ io.on("connection", (socket) => {
     }
   });
 
+  // World chat — broadcast a message to everyone in the world.
+  socket.on("chat:send", (text, callback) => {
+    const sender = players.get(socket.id);
+    const body = typeof text === "string" ? text.trim().slice(0, 500) : "";
+
+    if (!sender || !body) {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "Message cannot be empty" });
+      }
+      return;
+    }
+
+    const message = {
+      id: `${socket.id}-${Date.now()}`,
+      senderId: socket.id,
+      senderName: sender.name || `Player ${socket.id.slice(0, 4)}`,
+      avatarColor: sender.avatarColor || DEFAULT_AVATAR_COLOR,
+      text: body,
+      sentAt: new Date().toISOString(),
+    };
+
+    io.emit("chat:message", message);
+
+    if (typeof callback === "function") {
+      callback({ success: true });
+    }
+  });
+
   // Mark the player disconnected.
   socket.on("disconnect", () => {
     players.delete(socket.id);
@@ -505,6 +541,10 @@ async function startServer() {
     );
 
     console.log("MongoDB 2d geospatial index ready!");
+
+    availableRooms = await initializeRoomCatalog(db);
+    console.log("Room catalog loaded:", availableRooms.length);
+
     console.log("MongoDB connected successfully!");
 
     httpServer.listen(PORT, () => {
