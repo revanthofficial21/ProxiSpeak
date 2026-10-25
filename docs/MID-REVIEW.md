@@ -94,3 +94,44 @@ Week 3/4 candidate.
 - [ ] Two-way audio confirmed by ear
 - [ ] Audit log captured as evidence
 - [ ] Audio Check screenshot / recording captured as evidence
+
+---
+
+## Evidence captured (25 Oct)
+
+**Deliverable 1 — Proximity Calculations: COMPLETE.**
+`node tests/proximity.test.js` -> all 7 pass, including "default radius is 100px",
+"only B is within 100px of A" and "a player exactly 100px away counts as nearby".
+`relaySignal()` gates every `webrtc:*` event on `isNearby(fromId, toId)`, so offers
+and answers only ever reach players inside the 100px radius.
+
+**Deliverable 2 — WebRTC Integration: COMPLETE.**
+`client/src/useVoiceChat.js` uses `getUserMedia`, `RTCPeerConnection`,
+createOffer/createAnswer, set(Local|Remote)Description, addIceCandidate and
+`ontrack`. All five `webrtc:*` signaling events are relayed (proximity-gated) by
+`server/index.js`.
+
+**Deliverable 3 — Spatial Audit: built, run pending.**
+The MongoDB run (`npm run audit`) could not be executed in the build environment:
+there is no `mongod`, and the sandbox network blocks the in-memory server's binary
+download. Run it locally or against Atlas and capture the log.
+
+A fallback benchmark is included — `server/spatial-benchmark.js` mirrors the same
+100px filter in pure JS so the correctness and latency of the grouping can still
+be shown. Actual output:
+
+```
+=== ProxiSpeak Spatial Benchmark (in-memory) ===
+players seeded : 250
+queries run    : 200
+radius         : 100px
+correctness    : 200/200 PASS
+latency (ms)   : min 0.0224  avg 0.0493  p50 0.0240  p95 0.1155  max 1.4258
+budget         : 20ms  -> PASS
+RESULT: PASS
+```
+
+**Deliverable 4 — Audio Check: built, run pending.**
+Run-book above; needs two browsers. Capture the screen recording.
+
+The consolidated pack is `Mid-Review-Evidence.docx`.
