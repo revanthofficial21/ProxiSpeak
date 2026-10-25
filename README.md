@@ -152,6 +152,12 @@ The `players` collection (MongoDB):
 
 **Prerequisites:** Node.js 20+, a MongoDB instance (local or Atlas).
 
+> **From the repo root**, pass-through scripts mirror the commands below:
+> `npm run install:all`, `npm run dev:server`, `npm run dev:client`, `npm test`,
+> `npm run audit`, `npm run audit:local`. The client and server are separate
+> packages, so a bare `npm run …` in the root will fail — use these, or `cd` into
+> the package first.
+
 ### Backend
 
 ```bash
@@ -180,10 +186,15 @@ microphone** in each, and move the avatars within 100px to connect.
 
 | Directory | Command | Purpose |
 |---|---|---|
+| **root** | `npm run install:all` | Install both packages |
+| **root** | `npm run dev:server` / `dev:client` | Start backend / frontend |
+| **root** | `npm test` | Run all server test suites |
+| **root** | `npm run audit` / `audit:local` | Spatial audit (MongoDB / no MongoDB) |
 | `server` | `npm run dev` | Start backend with nodemon |
 | `server` | `npm start` | Start backend |
-| `server` | `npm test` | Run proximity unit tests |
-| `server` | `npm run audit` | Run the spatial audit (correctness + latency) |
+| `server` | `npm test` | Run all 6 server test suites |
+| `server` | `npm run audit` | Spatial audit against MongoDB |
+| `server` | `npm run audit:local` | Spatial benchmark — no MongoDB needed |
 | `client` | `npm run dev` | Start the Vite dev server |
 | `client` | `npm run build` | Production build |
 
@@ -193,9 +204,10 @@ microphone** in each, and move the avatars within 100px to connect.
 |---|---|---|
 | **Week 1** | Signaling & Movement — position broadcast, MongoDB geospatial schema, canvas world, keyboard movement | ✅ Done |
 | **Week 2** | Proximity Calculations (`$near`, 100px gating) + WebRTC Integration (`getUserMedia`, peer audio) | ✅ Done |
-| **Mid-Review** | Spatial Audit (sub-20ms proof) + Audio Check (two-browser demo) | 🟡 Tooling ready — execution/evidence pending |
-| **Week 3** | Mesh Scaling (Redis Pub/Sub, multi-instance) + Dynamic Attenuation (Web Audio gain) | ⬜ Not started |
-| **Week 4** | Room Persistence (layouts + sound-blocking obstacles) + Polish (3D panning, 60 FPS) | ⬜ Not started |
+| **Mid-Review** | Spatial Audit (sub-20ms proof) + Audio Check (two-browser demo) | 🟢 Audit PASS (200/200, 1 ms); Audio Check pending |
+| **Week 3** | Mesh Scaling (Redis Pub/Sub, multi-instance) + Dynamic Attenuation (Web Audio gain) | 🟡 Attenuation ✅ (spatial mixer); mesh scaling not started |
+| **Week 4** | Room Persistence (layouts + sound-blocking obstacles) + Polish (3D panning, 60 FPS) | 🟡 Spaces + Meeting Room call ✅; polish pending |
+| **Extras** | People list, world chat, avatar colour, speaker volume, resume-audio prompt | ✅ Done |
 
 **Working today:** live multiplayer movement, MongoDB `$near` proximity grouping,
 proximity-gated WebRTC signaling, and peer-to-peer audio between nearby avatars.

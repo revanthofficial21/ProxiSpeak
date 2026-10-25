@@ -1,0 +1,14 @@
+{
+  "name": "proxispeak",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ProxiSpeak — proximity-based spatial voice chat. The client and server are separate packages under client/ and server/; the scripts here are pass-throughs so you can run them from the repo root.",
+  "scripts": {
+    "install:all": "npm --prefix server install && npm --prefix client install",
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run dev",
+    "test": "npm --prefix server test",
+    "audit": "npm --prefix server run audit",
+    "audit:local": "npm --prefix server run audit:local"
+  }
+}
