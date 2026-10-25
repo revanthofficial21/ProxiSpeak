@@ -116,6 +116,7 @@ function publicPlayer(player) {
     id: player.id,
     name: player.name,
     avatarColor: player.avatarColor || DEFAULT_AVATAR_COLOR,
+    status: player.status || "",
     x: player.x,
     y: player.y,
   };
@@ -213,6 +214,7 @@ io.on("connection", (socket) => {
     socketId: socket.id,
     name: "",
     avatarColor: DEFAULT_AVATAR_COLOR,
+    status: "",
     room: DEFAULT_ROOM,
     ...spawnPosition,
   };
@@ -444,6 +446,7 @@ io.on("connection", (socket) => {
         {
           $set: {
             name: updatedPlayer.name,
+            status: updatedPlayer.status || "",
             room: updatedPlayer.room,
             x: updatedPlayer.x,
             y: updatedPlayer.y,
@@ -617,6 +620,28 @@ io.on("connection", (socket) => {
     }
 
     if (typeof callback === "function") callback({ success: true });
+  });
+
+  // A short status line shown on the profile and in the people list.
+  socket.on("player:setStatus", (status, callback) => {
+    const reply = (response) => {
+      if (typeof callback === "function") callback(response);
+    };
+
+    const currentPlayer = players.get(socket.id);
+    if (!currentPlayer) {
+      reply({ success: false, error: "Player not found" });
+      return;
+    }
+
+    const nextStatus =
+      typeof status === "string" ? status.trim().slice(0, 80) : "";
+
+    currentPlayer.status = nextStatus;
+    players.set(socket.id, currentPlayer);
+
+    io.emit("player:status", { id: socket.id, status: nextStatus });
+    reply({ success: true, status: nextStatus });
   });
 
   // Mark the player disconnected.

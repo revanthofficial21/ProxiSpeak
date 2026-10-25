@@ -10,35 +10,163 @@ const SPEED = 240;
 const AVATAR_RADIUS = 20;
 const DEFAULT_AVATAR_COLOR = "#6ee7b7";
 
-const obstacles = [
-  { x: 100, y: 120, width: 120, height: 55 },
-  { x: 300, y: 120, width: 120, height: 55 },
-  { x: 100, y: 300, width: 120, height: 55 },
-  { x: 300, y: 300, width: 120, height: 55 },
-  { x: 600, y: 180, width: 220, height: 90 },
+// Named areas of the office, drawn as tinted panels with labels.
+const ZONES = [
+  { name: "Open Workspace", x: 40, y: 40, w: 440, h: 290, tint: "#16263c", accent: "#38bdf8" },
+  { name: "Meeting Room", x: 560, y: 40, w: 400, h: 250, tint: "#2a2418", accent: "#fbbf24" },
+  { name: "Discussion Area", x: 500, y: 330, w: 250, h: 230, tint: "#241f33", accent: "#a78bfa" },
+  { name: "Lounge", x: 40, y: 370, w: 420, h: 190, tint: "#152a24", accent: "#34d399" },
+  { name: "Game Zone", x: 780, y: 330, w: 180, h: 230, tint: "#2a1a26", accent: "#f472b6" },
 ];
 
-function drawOfficeFurniture(ctx) {
-  obstacles.slice(0, 4).forEach((desk) => {
-    ctx.fillStyle = "#475569";
-    ctx.fillRect(desk.x, desk.y, desk.width, desk.height);
-    ctx.strokeStyle = "#94a3b8";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(desk.x, desk.y, desk.width, desk.height);
-    ctx.fillStyle = "#38bdf8";
-    ctx.fillRect(desk.x + 42, desk.y + 8, 36, 20);
-  });
+const desks = [
+  { x: 90, y: 110, width: 120, height: 55 },
+  { x: 280, y: 110, width: 120, height: 55 },
+  { x: 90, y: 235, width: 120, height: 55 },
+  { x: 280, y: 235, width: 120, height: 55 },
+];
+const meetingTable = { x: 610, y: 120, width: 300, height: 110 };
+const discussionTable = { x: 570, y: 400, width: 110, height: 110 };
+const gameTable = { x: 810, y: 395, width: 120, height: 100 };
+const sofas = [
+  { x: 80, y: 400, width: 150, height: 42 },
+  { x: 80, y: 495, width: 150, height: 42 },
+];
+const plants = [
+  { x: 62, y: 62 },
+  { x: 456, y: 62 },
+  { x: 938, y: 62 },
+  { x: 62, y: 538 },
+  { x: 938, y: 538 },
+];
 
-  const table = obstacles[4];
-  ctx.fillStyle = "#854d0e";
-  ctx.fillRect(table.x, table.y, table.width, table.height);
+// Solid things the avatar cannot walk through.
+const obstacles = [...desks, meetingTable, discussionTable, gameTable, ...sofas];
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// Draws the whole office: floor grid, named zones, furniture and walls.
+function drawOffice(ctx) {
+  ctx.fillStyle = "#0f1622";
+  ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+
+  ctx.strokeStyle = "rgba(148, 163, 184, 0.06)";
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= WORLD_WIDTH; x += 40) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, WORLD_HEIGHT);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= WORLD_HEIGHT; y += 40) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(WORLD_WIDTH, y);
+    ctx.stroke();
+  }
+
+  for (const zone of ZONES) {
+    ctx.fillStyle = zone.tint;
+    ctx.fillRect(zone.x, zone.y, zone.w, zone.h);
+    ctx.globalAlpha = 0.4;
+    ctx.strokeStyle = zone.accent;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(zone.x + 1, zone.y + 1, zone.w - 2, zone.h - 2);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = zone.accent;
+    ctx.font = "bold 11px Arial";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(zone.name.toUpperCase(), zone.x + 12, zone.y + 22);
+  }
+
+  for (const desk of desks) {
+    ctx.fillStyle = "#334155";
+    roundRect(ctx, desk.x, desk.y, desk.width, desk.height, 6);
+    ctx.fill();
+    ctx.strokeStyle = "#475569";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = "#0ea5e9";
+    ctx.fillRect(desk.x + 44, desk.y + 10, 34, 20);
+    ctx.fillStyle = "#1e293b";
+    ctx.beginPath();
+    ctx.arc(desk.x + desk.width / 2, desk.y + desk.height + 16, 12, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = "#7c5a1e";
+  roundRect(ctx, meetingTable.x, meetingTable.y, meetingTable.width, meetingTable.height, 14);
+  ctx.fill();
   ctx.strokeStyle = "#fbbf24";
-  ctx.strokeRect(table.x, table.y, table.width, table.height);
-  ctx.fillStyle = "#cbd5e1";
-  ctx.font = "16px Arial";
-  ctx.textAlign = "left";
-  ctx.fillText("WORK AREA", 100, 85);
-  ctx.fillText("MEETING ROOM", 620, 155);
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = "#1e293b";
+  for (let i = 0; i < 4; i += 1) {
+    const cx = meetingTable.x + 45 + i * 70;
+    ctx.beginPath();
+    ctx.arc(cx, meetingTable.y - 14, 11, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx, meetingTable.y + meetingTable.height + 14, 11, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const dcx = discussionTable.x + discussionTable.width / 2;
+  const dcy = discussionTable.y + discussionTable.height / 2;
+  ctx.fillStyle = "#3b3560";
+  ctx.beginPath();
+  ctx.arc(dcx, dcy, discussionTable.width / 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#a78bfa";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = "#1e293b";
+  for (let i = 0; i < 6; i += 1) {
+    const angle = (i / 6) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.arc(dcx + Math.cos(angle) * 68, dcy + Math.sin(angle) * 68, 10, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = "#14532d";
+  roundRect(ctx, gameTable.x, gameTable.y, gameTable.width, gameTable.height, 10);
+  ctx.fill();
+  ctx.strokeStyle = "#4ade80";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  for (const sofa of sofas) {
+    ctx.fillStyle = "#334155";
+    roundRect(ctx, sofa.x, sofa.y, sofa.width, sofa.height, 10);
+    ctx.fill();
+    ctx.strokeStyle = "#475569";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  for (const plant of plants) {
+    ctx.fillStyle = "#1f3a2c";
+    ctx.beginPath();
+    ctx.arc(plant.x, plant.y, 14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#34d399";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = "#1e293b";
+  ctx.lineWidth = 10;
+  ctx.strokeRect(5, 5, WORLD_WIDTH - 10, WORLD_HEIGHT - 10);
+  ctx.lineWidth = 1;
 }
 
 function hitsObstacle(x, y) {
@@ -78,6 +206,9 @@ export default function App() {
   const [avatarColor, setAvatarColor] = useState(DEFAULT_AVATAR_COLOR);
   const [savedName, setSavedName] = useState("");
   const [nameError, setNameError] = useState("");
+  const [status, setStatus] = useState("");
+  const [savedStatus, setSavedStatus] = useState("");
+  const [statusError, setStatusError] = useState("");
   const [messages, setMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [chatError, setChatError] = useState("");
@@ -223,6 +354,18 @@ export default function App() {
         current.filter((p) => p.id !== participantId)
       );
     });
+    client.on("player:status", ({ id, status: nextStatus } = {}) => {
+      if (typeof id !== "string") return;
+      const existing = playersRef.current.get(id);
+      if (!existing) return;
+      playersRef.current.set(id, { ...existing, status: nextStatus || "" });
+      setPlayers(Array.from(playersRef.current.values()));
+      setNearbyPlayers((current) =>
+        current.map((p) =>
+          p.id === id ? { ...p, status: nextStatus || "" } : p
+        )
+      );
+    });
 
     return () => {
       client.disconnect();
@@ -310,8 +453,10 @@ export default function App() {
             Math.min(WORLD_HEIGHT - AVATAR_RADIUS, current.y + stepY)
           );
 
-          if (!hitsObstacle(nextX, current.y)) current.x = nextX;
-          if (!hitsObstacle(current.x, nextY)) current.y = nextY;
+          // If we somehow start inside furniture, let the player walk out.
+          const stuck = hitsObstacle(current.x, current.y);
+          if (stuck || !hitsObstacle(nextX, current.y)) current.x = nextX;
+          if (stuck || !hitsObstacle(current.x, nextY)) current.y = nextY;
 
           if (timestamp - lastSent > 40) {
             client.emit("player:move", { x: current.x, y: current.y });
@@ -320,56 +465,55 @@ export default function App() {
         }
       }
 
-      ctx.clearRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-      ctx.fillStyle = "#101827";
-      ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-      ctx.strokeStyle = "#263449";
-      ctx.lineWidth = 1;
-      for (let x = 0; x <= WORLD_WIDTH; x += 40) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, WORLD_HEIGHT);
-        ctx.stroke();
-      }
-      for (let y = 0; y <= WORLD_HEIGHT; y += 40) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(WORLD_WIDTH, y);
-        ctx.stroke();
-      }
+      drawOffice(ctx);
+      const me = client ? playersRef.current.get(client.id) : null;
 
-      drawOfficeFurniture(ctx);
       for (const player of playersRef.current.values()) {
         const isMe = player.id === client?.id;
         if (!Number.isFinite(player.x) || !Number.isFinite(player.y)) continue;
 
-        if (!isMe && nearbyRef.current.has(player.id)) {
+        // Graded proximity ring: green close, blue medium, red far.
+        if (!isMe && nearbyRef.current.has(player.id) && me) {
+          const distance = Math.hypot(player.x - me.x, player.y - me.y);
+          const ringColor =
+            distance < 40 ? "#34d399" : distance < 75 ? "#38bdf8" : "#f87171";
           ctx.beginPath();
           ctx.arc(player.x, player.y, 34, 0, Math.PI * 2);
-          ctx.strokeStyle = "#fbbf24";
+          ctx.strokeStyle = ringColor;
           ctx.lineWidth = 3;
           ctx.stroke();
+          ctx.globalAlpha = 0.12;
+          ctx.fillStyle = ringColor;
+          ctx.fill();
+          ctx.globalAlpha = 1;
           ctx.lineWidth = 1;
         }
 
+        const playerColor = player.avatarColor || DEFAULT_AVATAR_COLOR;
+
         ctx.beginPath();
         ctx.arc(player.x, player.y, AVATAR_RADIUS, 0, Math.PI * 2);
-        const playerColor = player.avatarColor || DEFAULT_AVATAR_COLOR;
         ctx.fillStyle = playerColor;
         ctx.fill();
-        ctx.beginPath();
-        ctx.arc(player.x, player.y, 27, 0, Math.PI * 2);
-        ctx.strokeStyle = playerColor;
-        ctx.globalAlpha = 0.5;
+        ctx.strokeStyle = isMe ? "#f8fafc" : "rgba(15, 23, 42, 0.65)";
+        ctx.lineWidth = 2;
         ctx.stroke();
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = "#f8fafc";
-        ctx.font = "13px Arial";
+        ctx.lineWidth = 1;
+
+        const initial = (player.name || "?").trim().charAt(0).toUpperCase();
+        ctx.fillStyle = "#0f172a";
+        ctx.font = "bold 15px Arial";
         ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(initial || "?", player.x, player.y + 1);
+        ctx.textBaseline = "alphabetic";
+
+        ctx.fillStyle = "#e2e8f0";
+        ctx.font = "12px Arial";
         ctx.fillText(
           isMe ? "You" : player.name || `Player ${player.id.slice(0, 4)}`,
           player.x,
-          player.y - 34
+          player.y + 40
         );
       }
 
@@ -424,6 +568,25 @@ export default function App() {
       if (!response?.success) {
         setNameError(response?.error || "Could not save your avatar colour.");
       }
+    });
+  };
+
+  const handleSetStatus = (event) => {
+    event.preventDefault();
+
+    const client = socketRef.current;
+    if (!client?.connected) {
+      setStatusError("Connect to the server before saving a status.");
+      return;
+    }
+
+    client.emit("player:setStatus", status, (response) => {
+      if (!response?.success) {
+        setStatusError(response?.error || "Could not save your status.");
+        return;
+      }
+      setSavedStatus(response.status || "");
+      setStatusError("");
     });
   };
 
@@ -559,6 +722,22 @@ export default function App() {
       </section>
 
       <section className="name-panel">
+        <div className="profile-preview">
+          <span
+            className="profile-avatar"
+            style={{ backgroundColor: avatarColor }}
+            aria-hidden="true"
+          >
+            {(savedName || playerName || "?").trim().charAt(0).toUpperCase() ||
+              "?"}
+          </span>
+          <div className="profile-preview-text">
+            <strong>{savedName || "Your profile"}</strong>
+            <span className="profile-status">
+              {savedStatus || "Add a status so people know what you're up to."}
+            </span>
+          </div>
+        </div>
         <form className="player-name-form" onSubmit={handleSetName}>
           <label htmlFor="player-name">
             {savedName ? `You are "${savedName}"` : "Set your display name"}
@@ -591,7 +770,22 @@ export default function App() {
             Save name
           </button>
         </form>
+        <form className="player-name-form" onSubmit={handleSetStatus}>
+          <label htmlFor="player-status">Status</label>
+          <input
+            id="player-status"
+            type="text"
+            value={status}
+            placeholder="e.g. Building the spatial mixer"
+            maxLength={80}
+            onChange={(event) => setStatus(event.target.value)}
+          />
+          <button type="submit" disabled={!connected}>
+            Save status
+          </button>
+        </form>
         {nameError && <p className="form-error">{nameError}</p>}
+        {statusError && <p className="form-error">{statusError}</p>}
       </section>
 
       <section className="world-card">
@@ -707,11 +901,16 @@ export default function App() {
                       player.avatarColor || DEFAULT_AVATAR_COLOR,
                   }}
                   aria-hidden="true"
-                />
+                >
+                  {(player.name || "?").trim().charAt(0).toUpperCase() || "?"}
+                </span>
                 <span className="people-name">
                   {player.id === socket?.id
                     ? `${player.name || "You"} (you)`
                     : player.name || `Player ${player.id.slice(0, 4)}`}
+                  {player.status ? (
+                    <span className="people-status">{player.status}</span>
+                  ) : null}
                 </span>
               </li>
             ))}
