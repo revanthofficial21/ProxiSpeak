@@ -388,11 +388,10 @@ io.on("connection", async (socket) => {
       }
       return;
     }
-    const message = createChatMessage(
-      players.get(socket.id),
-      text,
-      chatMessageId + 1
-    );
+    // Look the sender up ONCE — calling players.get() three times risks a
+    // mid-handler disconnect turning .room into a TypeError.
+    const sender = players.get(socket.id);
+    const message = createChatMessage(sender, text, chatMessageId + 1);
     if (!message) {
       if (typeof callback === "function") {
         callback({
@@ -403,10 +402,18 @@ io.on("connection", async (socket) => {
       return;
     }
 
+    const channel = roomChannel(sender.room);
+    if (!channel) {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "You are not in a valid space" });
+      }
+      return;
+    }
+
     chatMessageId = message.id;
-    io.to(roomChannel(players.get(socket.id).room)).emit("chat:message", {
+    io.to(channel).emit("chat:message", {
       ...message,
-      room: players.get(socket.id).room,
+      room: sender.room,
     });
     if (typeof callback === "function") {
       callback({ success: true });
@@ -696,6 +703,7 @@ io.on("connection", async (socket) => {
         {
           $set: {
             name: updatedPlayer.name,
+            room: updatedPlayer.room,
             ...positionFields(updatedPlayer.x, updatedPlayer.y),
             connected: true,
             updatedAt: new Date(),
