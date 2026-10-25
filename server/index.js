@@ -214,6 +214,15 @@ async function leaveMeetingCall(socket) {
   await socket.leave(`meeting-call:${MEETING_ROOM}`);
 }
 
+// Emit to everyone in a room, guarding the channel: roomChannel() returns null
+// for an unknown space, and io.to(null) silently drops the message.
+function emitToRoom(roomName, event, payload) {
+  const channel = roomChannel(roomName);
+  if (!channel) return false;
+  io.to(channel).emit(event, payload);
+  return true;
+}
+
 io.on("connection", async (socket) => {
   console.log(`Player connected: ${socket.id}`);
 
@@ -574,15 +583,9 @@ io.on("connection", async (socket) => {
       }
 
       players.set(socket.id, currentPlayer);
-      io.to(roomChannel(currentPlayer.room)).emit(
-        "player:renamed",
-        publicPlayer(currentPlayer)
-      );
+      emitToRoom(currentPlayer.room, "player:renamed", publicPlayer(currentPlayer));
       if (returningPlayer) {
-        io.to(roomChannel(currentPlayer.room)).emit(
-          "player:moved",
-          publicPlayer(currentPlayer)
-        );
+        emitToRoom(currentPlayer.room, "player:moved", publicPlayer(currentPlayer));
         updatePlayerProximity(socket, currentPlayer).catch((error) => {
           console.error(
             "Failed to update proximity after player restore:",
@@ -652,10 +655,7 @@ io.on("connection", async (socket) => {
 
       currentPlayer.avatarPrefs = normalizedPrefs;
       players.set(socket.id, currentPlayer);
-      io.to(roomChannel(currentPlayer.room)).emit(
-        "player:avatarPrefs",
-        publicPlayer(currentPlayer)
-      );
+      emitToRoom(currentPlayer.room, "player:avatarPrefs", publicPlayer(currentPlayer));
 
       if (typeof callback === "function") {
         callback({
@@ -718,10 +718,7 @@ io.on("connection", async (socket) => {
         return;
       }
 
-      io.to(roomChannel(updatedPlayer.room)).emit(
-        "player:moved",
-        publicPlayer(updatedPlayer)
-      );
+      emitToRoom(updatedPlayer.room, "player:moved", publicPlayer(updatedPlayer));
 
       await updatePlayerProximity(socket, updatedPlayer);
     } catch (error) {
