@@ -84,6 +84,8 @@ export default function App() {
   const [rooms, setRooms] = useState([]);
   const [activeRoomId, setActiveRoomId] = useState("");
   const [roomsError, setRoomsError] = useState("");
+  const [roomError, setRoomError] = useState("");
+  const [meetingParticipants, setMeetingParticipants] = useState([]);
   const {
     voiceEnabled,
     voiceStatus,
@@ -200,6 +202,9 @@ export default function App() {
     client.on("chat:message", (message) => {
       if (!message || typeof message.text !== "string") return;
       setMessages((current) => [...current.slice(-199), message]);
+    });
+    client.on("room:state", ({ room } = {}) => {
+      if (typeof room === "string") setActiveRoomId(room);
     });
 
     return () => {
@@ -424,6 +429,44 @@ export default function App() {
       setChatInput("");
       setChatError("");
     });
+  };
+
+  const handleJoinRoom = (roomId) => {
+    const client = socketRef.current;
+    if (!client?.connected) {
+      setRoomError("Connect to the server before switching spaces.");
+      return;
+    }
+
+    client.emit("player:joinRoom", roomId, (response) => {
+      if (!response?.success) {
+        setRoomError(response?.error || "Could not switch space.");
+        return;
+      }
+      setRoomError("");
+      setActiveRoomId(response.room);
+      setMeetingParticipants([]);
+    });
+  };
+
+  const handleMeetingJoin = () => {
+    const client = socketRef.current;
+    if (!client?.connected) return;
+
+    client.emit("meeting:join", (response) => {
+      if (!response?.success) {
+        setRoomError(response?.error || "Could not join the call.");
+        return;
+      }
+      setMeetingParticipants(response.participants || []);
+      setRoomError("");
+    });
+  };
+
+  const handleMeetingLeave = () => {
+    const client = socketRef.current;
+    if (!client?.connected) return;
+    client.emit("meeting:leave", () => setMeetingParticipants([]));
   };
 
   useEffect(() => {
@@ -675,15 +718,31 @@ export default function App() {
                   room.id === activeRoomId ? " selected" : ""
                 }`}
                 aria-pressed={room.id === activeRoomId}
-                onClick={() => setActiveRoomId(room.id)}
+                onClick={() => handleJoinRoom(room.id)}
               >
                 {room.name}
               </button>
             ))}
           </div>
         )}
+        {activeRoomId === "meeting-room" && (
+          <div className="rooms-list">
+            <button type="button" className="room-button" onClick={handleMeetingJoin}>
+              Join call
+            </button>
+            <button type="button" className="room-button" onClick={handleMeetingLeave}>
+              Leave call
+            </button>
+          </div>
+        )}
+        {meetingParticipants.length > 0 && (
+          <p className="panel-note">
+            On the call: {meetingParticipants.map((p) => p.name).join(", ")}
+          </p>
+        )}
+        {roomError && <p className="panel-error">{roomError}</p>}
         <p className="panel-note">
-          Spaces are a catalogue for now — everyone still shares one world.
+          Your space scopes who you can hear and chat with.
         </p>
       </section>
 

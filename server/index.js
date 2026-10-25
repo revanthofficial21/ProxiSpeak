@@ -12,6 +12,18 @@ const {
   restoreReturningPlayer,
 } = require("./lib/player-persistence");
 const { initializeRoomCatalog } = require("./lib/roomCatalog");
+const {
+  DEFAULT_ROOM,
+  normalizeRoomName,
+  roomChannel,
+  getPlayersInRoom,
+} = require("./lib/rooms");
+const {
+  canJoinMeetingCall,
+  getMeetingCallParticipants,
+  canRelayWebRtcSignal,
+} = require("./lib/meeting-call");
+const { createChatMessage } = require("./lib/chat");
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -44,6 +56,9 @@ const players = new Map();
 // Tracks which players are currently within proximity of each other.
 // Drives the enter/leave events and gates the WebRTC signaling relay.
 const proximityState = new Map();
+
+// Players currently in the Meeting Room call (talk regardless of distance).
+const meetingCallParticipants = new Set();
 
 const WORLD_WIDTH = 1000;
 const WORLD_HEIGHT = 600;
@@ -113,8 +128,19 @@ function isNearby(aId, bId) {
 
 // Relay a WebRTC signal to a peer, but only when the two are within proximity.
 function relaySignal(event, fromId, toId, payload) {
-  if (typeof toId !== "string" || toId === fromId) return;
-  if (!isNearby(fromId, toId)) return;
+  // Only same-room, in-range peers — or members of the meeting call — may
+  // exchange WebRTC signals.
+  if (
+    !canRelayWebRtcSignal(
+      fromId,
+      toId,
+      players,
+      proximityState,
+      meetingCallParticipants
+    )
+  ) {
+    return;
+  }
 
   io.to(toId).emit(event, { ...payload, fromId });
 }
@@ -135,14 +161,20 @@ async function syncProximity(socketId, player) {
     .project({ _id: 0, socketId: 1, name: 1, avatarColor: 1, x: 1, y: 1 })
     .toArray();
 
-  const nearbyList = nearbyPlayers.map((nearbyPlayer) => ({
-    id: nearbyPlayer.socketId,
-    socketId: nearbyPlayer.socketId,
-    name: nearbyPlayer.name,
-    avatarColor: nearbyPlayer.avatarColor || DEFAULT_AVATAR_COLOR,
-    x: nearbyPlayer.x,
-    y: nearbyPlayer.y,
-  }));
+  // Keep only peers in the SAME space — rooms scope who can hear whom.
+  const nearbyList = nearbyPlayers
+    .filter((nearbyPlayer) => {
+      const peer = players.get(nearbyPlayer.socketId);
+      return peer && peer.room === player.room;
+    })
+    .map((nearbyPlayer) => ({
+      id: nearbyPlayer.socketId,
+      socketId: nearbyPlayer.socketId,
+      name: nearbyPlayer.name,
+      avatarColor: nearbyPlayer.avatarColor || DEFAULT_AVATAR_COLOR,
+      x: nearbyPlayer.x,
+      y: nearbyPlayer.y,
+    }));
 
   io.to(socketId).emit("player:nearby", nearbyList);
 
@@ -185,10 +217,12 @@ io.on("connection", (socket) => {
     socketId: socket.id,
     name: "",
     avatarColor: DEFAULT_AVATAR_COLOR,
+    room: DEFAULT_ROOM,
     ...spawnPosition,
   };
 
   players.set(socket.id, player);
+  socket.join(roomChannel(player.room));
 
   // Save the player's initial position.
   markPlayerConnected(db.collection("players"), player)
@@ -198,6 +232,10 @@ io.on("connection", (socket) => {
     });
 
   socket.emit("world:state", Array.from(players.values()));
+  socket.emit("room:state", {
+    room: player.room,
+    players: getPlayersInRoom(players, player.room).map(publicPlayer),
+  });
   socket.broadcast.emit("player:joined", player);
 
   // WebRTC signaling — relayed only between players within proximity.
@@ -445,33 +483,121 @@ io.on("connection", (socket) => {
   // World chat — broadcast a message to everyone in the world.
   socket.on("chat:send", (text, callback) => {
     const sender = players.get(socket.id);
-    const body = typeof text === "string" ? text.trim().slice(0, 500) : "";
+    const base = createChatMessage(sender, text, `${socket.id}-${Date.now()}`);
 
-    if (!sender || !body) {
+    if (!base) {
       if (typeof callback === "function") {
-        callback({ success: false, error: "Message cannot be empty" });
+        callback({
+          success: false,
+          error: "Message must be 1 to 500 characters",
+        });
       }
       return;
     }
 
     const message = {
-      id: `${socket.id}-${Date.now()}`,
+      ...base,
       senderId: socket.id,
-      senderName: sender.name || `Player ${socket.id.slice(0, 4)}`,
       avatarColor: sender.avatarColor || DEFAULT_AVATAR_COLOR,
-      text: body,
+      room: sender.room,
       sentAt: new Date().toISOString(),
     };
 
-    io.emit("chat:message", message);
+    // Chat is scoped to the sender's space.
+    io.to(roomChannel(sender.room)).emit("chat:message", message);
 
     if (typeof callback === "function") {
       callback({ success: true });
     }
   });
 
+  // Move to another space. Only people in the same space hear each other.
+  socket.on("player:joinRoom", async (requestedRoom, callback) => {
+    const reply = (response) => {
+      if (typeof callback === "function") callback(response);
+    };
+
+    const currentPlayer = players.get(socket.id);
+    const roomName = normalizeRoomName(requestedRoom);
+
+    if (!roomName) {
+      reply({ success: false, error: "Unknown space" });
+      return;
+    }
+    if (!currentPlayer) {
+      reply({ success: false, error: "Player not found" });
+      return;
+    }
+    if (currentPlayer.room === roomName) {
+      reply({ success: true, room: roomName });
+      return;
+    }
+
+    const previousChannel = roomChannel(currentPlayer.room);
+    const nextChannel = roomChannel(roomName);
+
+    await socket.join(nextChannel);
+    meetingCallParticipants.delete(socket.id);
+    await socket.leave(previousChannel);
+
+    // Drop proximity to everyone in the old space.
+    const nearSet = proximityState.get(socket.id);
+    if (nearSet) {
+      for (const peerId of nearSet) {
+        io.to(peerId).emit("proximity:leave", socket.id);
+        const peerSet = proximityState.get(peerId);
+        if (peerSet) peerSet.delete(socket.id);
+      }
+      proximityState.delete(socket.id);
+    }
+
+    currentPlayer.room = roomName;
+    players.set(socket.id, currentPlayer);
+
+    socket.emit("room:state", {
+      room: roomName,
+      players: getPlayersInRoom(players, roomName).map(publicPlayer),
+    });
+    reply({ success: true, room: roomName });
+
+    try {
+      await syncProximity(socket.id, currentPlayer);
+    } catch (error) {
+      console.error(
+        "Failed to update proximity after room switch:",
+        error.message
+      );
+    }
+  });
+
+  // Join the Meeting Room call — talk to room-mates regardless of distance.
+  socket.on("meeting:join", (callback) => {
+    const reply = (response) => {
+      if (typeof callback === "function") callback(response);
+    };
+
+    const currentPlayer = players.get(socket.id);
+    if (!canJoinMeetingCall(currentPlayer)) {
+      reply({ success: false, error: "Join the Meeting Room first" });
+      return;
+    }
+
+    meetingCallParticipants.add(socket.id);
+    const participants = getMeetingCallParticipants(
+      meetingCallParticipants,
+      players
+    );
+    reply({ success: true, participants });
+  });
+
+  socket.on("meeting:leave", (callback) => {
+    meetingCallParticipants.delete(socket.id);
+    if (typeof callback === "function") callback({ success: true });
+  });
+
   // Mark the player disconnected.
   socket.on("disconnect", () => {
+    meetingCallParticipants.delete(socket.id);
     players.delete(socket.id);
     spawnSlots.delete(socket.id);
 
