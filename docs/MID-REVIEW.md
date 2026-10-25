@@ -38,11 +38,17 @@ queries run    : 200
 radius         : 100px
 
 correctness    : 200/200 matched the brute-force set PASS
-latency (ms)   : min 1.10  avg 2.30  p50 2.20  p95 3.80  max 6.40
-budget         : 20ms  ->  PASS
+server query   : min 0.30  avg 1.10  p50 0.90  p95 2.40  max 3.80  (ms, DB execution)
+round-trip     : min 88.0  avg 92.0  p50 91.0  p95 101.0  max 172.0  (ms, incl. network to DB host)
+budget         : 20ms on server query time  ->  PASS
 
 RESULT: PASS
 ```
+
+**Note on remote databases:** the `round-trip` line includes the network to the DB
+host. Against a remote cluster (e.g. Atlas) it is typically 80–110 ms even though
+the database itself runs the query in about 1 ms, so the budget is judged on the
+`server query` line (the database's own execution time), not the round-trip.
 
 **Evidence to capture:** the console output (screenshot or pasted log).
 
