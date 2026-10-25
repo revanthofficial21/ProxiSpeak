@@ -1,3 +1,7 @@
+# The root package.json has no dependencies, so its lock file is an empty
+# artifact. The real locks are client/package-lock.json and server/package-lock.json.
+/package-lock.json
+
 # Logs
 logs
 *.log
@@ -25,7 +29,7 @@ coverage
 # nyc test coverage
 .nyc_output
 
-# Grunt intermediate storage (https://gruntjs.com/creating-plugins#storing-task-files)
+# Grunt intermediate storage (https://gruntjs.com/creating-plugins
 .grunt
 
 # Bower dependency directory (https://bower.io/)
@@ -86,7 +90,7 @@ dist
 # Gatsby files
 .cache/
 # Comment in the public line in if your project uses Gatsby and not Next.js
-# https://nextjs.org/blog/next-9-1#public-directory-support
+# https://nextjs.org/blog/next-9-1
 # public
 
 # vuepress build output
