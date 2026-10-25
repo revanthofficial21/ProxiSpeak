@@ -1,4 +1,7 @@
-const ROOM_NAMES = ["Lounge", "Meeting Room", "Focus Space"];
+// Must match the names seeded by lib/roomCatalog.js and shown in the client.
+// (Previously these were "Lounge" / "Meeting Room" / "Focus Space", which the
+// client's catalogue never sends — every space switch failed as "Unknown space".)
+const ROOM_NAMES = ["Open World", "Meeting Room", "Lounge"];
 const DEFAULT_ROOM = ROOM_NAMES[0];
 const { getNearbyPlayers } = require("./proximity");
 

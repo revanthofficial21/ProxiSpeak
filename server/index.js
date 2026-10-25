@@ -121,12 +121,8 @@ function publicPlayer(player) {
   };
 }
 
-function isNearby(aId, bId) {
-  const set = proximityState.get(aId);
-  return Boolean(set && set.has(bId));
-}
-
-// Relay a WebRTC signal to a peer, but only when the two are within proximity.
+// Relay a WebRTC signal to a peer, but only when the two are in the same space
+// and within proximity (or are members of the meeting call).
 function relaySignal(event, fromId, toId, payload) {
   // Only same-room, in-range peers — or members of the meeting call — may
   // exchange WebRTC signals.
@@ -448,6 +444,7 @@ io.on("connection", (socket) => {
         {
           $set: {
             name: updatedPlayer.name,
+            room: updatedPlayer.room,
             x: updatedPlayer.x,
             y: updatedPlayer.y,
             location: [updatedPlayer.x, updatedPlayer.y],

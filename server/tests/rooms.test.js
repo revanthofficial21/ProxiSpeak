@@ -22,13 +22,13 @@ function check(label, condition) {
 const players = new Map([
   ["lounge-a", { id: "lounge-a", room: "Lounge" }],
   ["lounge-b", { id: "lounge-b", room: "Lounge" }],
-  ["focus", { id: "focus", room: "Focus Space" }],
+  ["focus", { id: "focus", room: "Open World" }],
 ]);
 
 check(
   "the configured rooms include the default and required spaces",
-  DEFAULT_ROOM === "Lounge" &&
-    ["Lounge", "Meeting Room", "Focus Space"].every((room) =>
+  DEFAULT_ROOM === "Open World" &&
+    ["Lounge", "Meeting Room", "Open World"].every((room) =>
       ROOM_NAMES.includes(room)
     )
 );
@@ -38,7 +38,7 @@ check(
   normalizeRoomName("Meeting Room") === "Meeting Room" &&
     normalizeRoomName("meeting room") === null &&
     normalizeRoomName("Other Space") === null &&
-    roomChannel("Focus Space") === "space:Focus Space" &&
+    roomChannel("Open World") === "space:Open World" &&
     roomChannel("Other Space") === null
 );
 

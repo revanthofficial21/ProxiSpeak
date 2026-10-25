@@ -715,17 +715,17 @@ export default function App() {
                 key={room.id}
                 type="button"
                 className={`room-button${
-                  room.id === activeRoomId ? " selected" : ""
+                  room.name === activeRoomId ? " selected" : ""
                 }`}
-                aria-pressed={room.id === activeRoomId}
-                onClick={() => handleJoinRoom(room.id)}
+                aria-pressed={room.name === activeRoomId}
+                onClick={() => handleJoinRoom(room.name)}
               >
                 {room.name}
               </button>
             ))}
           </div>
         )}
-        {activeRoomId === "meeting-room" && (
+        {activeRoomId === "Meeting Room" && (
           <div className="rooms-list">
             <button type="button" className="room-button" onClick={handleMeetingJoin}>
               Join call
