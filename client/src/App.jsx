@@ -83,9 +83,13 @@ export default function App() {
     voiceStatus,
     peerStates,
     muted,
+    speakerVolume,
+    audioOutputBlocked,
     enableVoice,
     disableVoice,
     toggleMute,
+    changeSpeakerVolume,
+    resumeAudio,
   } = useVoiceChat(socket, nearbyPlayers, playersRef);
 
   useEffect(() => {
@@ -525,6 +529,23 @@ export default function App() {
             {muted ? "Unmute" : "Mute"}
           </button>
         )}
+        {audioOutputBlocked && (
+          <button type="button" className="resume-audio" onClick={resumeAudio}>
+            Resume audio
+          </button>
+        )}
+        <label htmlFor="speaker-volume" className="speaker-volume">
+          Speaker volume
+          <input
+            id="speaker-volume"
+            type="range"
+            min="0"
+            max="100"
+            value={speakerVolume}
+            onChange={(event) => changeSpeakerVolume(event.target.value)}
+          />
+          <span>{speakerVolume}%</span>
+        </label>
         <p>
           Enable your microphone and move within 100 pixels of another player
           to connect.

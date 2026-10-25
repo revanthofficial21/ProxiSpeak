@@ -463,3 +463,28 @@ button:disabled {
   background: #101827;
   cursor: pointer;
 }
+
+/* --- Master speaker volume + resume audio --- */
+.speaker-volume {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #cbd5e1;
+}
+
+.speaker-volume input[type="range"] {
+  flex: 1;
+  accent-color: #34d399;
+}
+
+.speaker-volume span {
+  min-width: 40px;
+  text-align: right;
+  color: #94a3b8;
+}
+
+.resume-audio {
+  background: #b45309;
+  border-color: #b45309;
+}

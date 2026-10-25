@@ -14,6 +14,8 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
   const [voiceStatus, setVoiceStatus] = useState("Voice chat disabled");
   const [peerStates, setPeerStates] = useState({});
   const [muted, setMuted] = useState(false);
+  const [speakerVolume, setSpeakerVolume] = useState(100);
+  const [audioOutputBlocked, setAudioOutputBlocked] = useState(false);
 
   const streamRef = useRef(null);
   const peersRef = useRef(new Map());
@@ -21,6 +23,8 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
   const pendingCandidatesRef = useRef(new Map());
   const audioContextRef = useRef(null);
   const mixerRef = useRef(new Map()); // peerId -> { source, gain, panner }
+  const speakerVolumeRef = useRef(1); // master volume, 0..1
+  const blockedRef = useRef(false);
 
   useEffect(() => {
     nearbyRef.current = nearbyPlayers;
@@ -34,10 +38,14 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
 
     if (!audioContextRef.current) {
       audioContextRef.current = new Ctx();
+      audioContextRef.current.onstatechange = () => {
+        setAudioOutputBlocked(audioContextRef.current.state !== "running");
+      };
     }
     if (audioContextRef.current.state === "suspended") {
       audioContextRef.current.resume().catch(() => {});
     }
+    setAudioOutputBlocked(audioContextRef.current.state !== "running");
     return audioContextRef.current;
   }, []);
 
@@ -439,9 +447,16 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
     const mix = () => {
       const ctx = audioContextRef.current;
 
-      // If the browser suspended us (autoplay policy), try to resume.
-      if (ctx && ctx.state === "suspended") {
-        ctx.resume().catch(() => {});
+      // If the browser suspended us (autoplay policy), try to resume, and
+      // surface it so the UI can offer a "Resume audio" control. Only setState
+      // when it actually changes — this runs every animation frame.
+      if (ctx) {
+        if (ctx.state === "suspended") ctx.resume().catch(() => {});
+        const blocked = ctx.state !== "running";
+        if (blocked !== blockedRef.current) {
+          blockedRef.current = blocked;
+          setAudioOutputBlocked(blocked);
+        }
       }
 
       const positions = positionsRef?.current;
@@ -463,9 +478,11 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
             const dy = peer.y - local.y;
             const distance = Math.hypot(dx, dy);
 
-            // Linear fall-off: full volume at 0px, silent at the radius edge.
+            // Linear fall-off: full volume at 0px, silent at the radius edge,
+            // scaled by the user's master speaker volume.
             const targetGain =
               MAX_GAIN *
+              speakerVolumeRef.current *
               Math.max(0, Math.min(1, 1 - distance / PROXIMITY_RADIUS));
 
             // setTargetAtTime smooths the change, avoiding zipper clicks.
@@ -489,13 +506,34 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
     return () => cancelAnimationFrame(frame);
   }, [socket, positionsRef]);
 
+  const changeSpeakerVolume = useCallback((value) => {
+    const clamped = Math.max(0, Math.min(100, Number(value) || 0));
+    speakerVolumeRef.current = clamped / 100;
+    setSpeakerVolume(clamped);
+  }, []);
+
+  const resumeAudio = useCallback(async () => {
+    const ctx = audioContextRef.current;
+    if (!ctx) return;
+    try {
+      if (ctx.state !== "running") await ctx.resume();
+      setAudioOutputBlocked(ctx.state !== "running");
+    } catch (error) {
+      console.error("Could not resume audio output:", error);
+    }
+  }, []);
+
   return {
     voiceEnabled,
     voiceStatus,
     peerStates,
     muted,
+    speakerVolume,
+    audioOutputBlocked,
     enableVoice,
     disableVoice,
     toggleMute,
+    changeSpeakerVolume,
+    resumeAudio,
   };
 }
