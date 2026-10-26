@@ -25,6 +25,12 @@ const {
 } = require("./lib/meeting-call");
 const { createChatMessage } = require("./lib/chat");
 const { createRateLimiter } = require("./lib/rate-limit");
+const {
+  allocateSpawnPosition: pickSpawnPosition,
+  clampPosition,
+  normalizeDisplayName,
+  diffProximity,
+} = require("./lib/session");
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -84,38 +90,17 @@ const SPAWN_SPACINGS = [80, 60, 40];
 const SPAWN_MARGIN = PLAYER_RADIUS + 20;
 const spawnSlots = new Map();
 
+// The placement rules live in lib/session.js; this only supplies the world.
 function allocateSpawnPosition() {
-  const occupiedPositions = Array.from(spawnSlots.values());
-  const minimumSpacing = PLAYER_RADIUS * 2 + 8;
-
-  for (const spacing of SPAWN_SPACINGS) {
-    const columns = Math.floor((WORLD_WIDTH - SPAWN_MARGIN * 2) / spacing) + 1;
-    const rows = Math.floor((WORLD_HEIGHT - SPAWN_MARGIN * 2) / spacing) + 1;
-
-    for (let row = 0; row < rows; row += 1) {
-      for (let column = 0; column < columns; column += 1) {
-        const position = {
-          x: SPAWN_MARGIN + column * spacing,
-          y: SPAWN_MARGIN + row * spacing,
-        };
-        const isAvailable = occupiedPositions.every(
-          (occupied) =>
-            Math.hypot(position.x - occupied.x, position.y - occupied.y) >=
-            minimumSpacing
-        );
-
-        if (isAvailable) return position;
-      }
-    }
-  }
-
-  return {
-    x: SPAWN_MARGIN + (spawnSlots.size % (WORLD_WIDTH - SPAWN_MARGIN * 2)),
-    y:
-      SPAWN_MARGIN +
-      (Math.floor(spawnSlots.size / (WORLD_WIDTH - SPAWN_MARGIN * 2)) %
-        (WORLD_HEIGHT - SPAWN_MARGIN * 2)),
-  };
+  return pickSpawnPosition({
+    occupied: Array.from(spawnSlots.values()),
+    usedCount: spawnSlots.size,
+    width: WORLD_WIDTH,
+    height: WORLD_HEIGHT,
+    radius: PLAYER_RADIUS,
+    spacings: SPAWN_SPACINGS,
+    margin: SPAWN_MARGIN,
+  });
 }
 
 app.get("/", (req, res) => {
@@ -189,12 +174,17 @@ async function syncProximity(socketId, player) {
 
   io.to(socketId).emit("player:nearby", nearbyList);
 
-  const newNearby = new Set(nearbyList.map((p) => p.id));
   const oldNearby = proximityState.get(socketId) || new Set();
+  const {
+    entered,
+    left,
+    next: newNearby,
+  } = diffProximity(
+    oldNearby,
+    nearbyList.map((p) => p.id)
+  );
 
-  for (const id of newNearby) {
-    if (oldNearby.has(id)) continue;
-
+  for (const id of entered) {
     io.to(socketId).emit("proximity:enter", nearbyList.find((p) => p.id === id));
     io.to(id).emit("proximity:enter", publicPlayer(player));
 
@@ -203,9 +193,7 @@ async function syncProximity(socketId, player) {
     proximityState.set(id, peerSet);
   }
 
-  for (const id of oldNearby) {
-    if (newNearby.has(id)) continue;
-
+  for (const id of left) {
     io.to(socketId).emit("proximity:leave", id);
     io.to(id).emit("proximity:leave", socketId);
 
@@ -334,7 +322,9 @@ io.on("connection", (socket) => {
 
   // Save the player's name.
   socket.on("player:setName", async (name, callback) => {
-    if (typeof name !== "string" || !name.trim()) {
+    const normalizedName = normalizeDisplayName(name);
+
+    if (!normalizedName) {
       if (typeof callback === "function") {
         callback({
           success: false,
@@ -356,7 +346,7 @@ io.on("connection", (socket) => {
       return;
     }
 
-    currentPlayer.name = name.trim().slice(0, 30);
+    currentPlayer.name = normalizedName;
 
     try {
       // If this name has a saved (inactive) record, claim it and restore the
@@ -365,16 +355,12 @@ io.on("connection", (socket) => {
         db.collection("players"),
         currentPlayer.name,
         socket.id,
-        (savedPlayer) => ({
-          x: Math.max(
-            PLAYER_RADIUS,
-            Math.min(WORLD_WIDTH - PLAYER_RADIUS, savedPlayer.x)
-          ),
-          y: Math.max(
-            PLAYER_RADIUS,
-            Math.min(WORLD_HEIGHT - PLAYER_RADIUS, savedPlayer.y)
-          ),
-        })
+        (savedPlayer) =>
+          clampPosition(savedPlayer.x, savedPlayer.y, {
+            width: WORLD_WIDTH,
+            height: WORLD_HEIGHT,
+            radius: PLAYER_RADIUS,
+          })
       );
 
       if (returningPlayer) {
@@ -464,8 +450,11 @@ io.on("connection", (socket) => {
 
     const updatedPlayer = {
       ...currentPlayer,
-      x: Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, position.x)),
-      y: Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, position.y)),
+      ...clampPosition(position.x, position.y, {
+        width: WORLD_WIDTH,
+        height: WORLD_HEIGHT,
+        radius: PLAYER_RADIUS,
+      }),
     };
 
     players.set(socket.id, updatedPlayer);
