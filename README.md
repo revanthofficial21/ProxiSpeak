@@ -198,6 +198,40 @@ microphone** in each, and move the avatars within 100px to connect.
 | `client` | `npm run dev` | Start the Vite dev server |
 | `client` | `npm run build` | Production build |
 
+## Deploying
+
+**Checklist before you deploy:**
+
+1. **HTTPS is mandatory.** `getUserMedia` only runs in a secure context, so the
+   client must be served over HTTPS (or `localhost`). On plain HTTP the
+   microphone button simply does nothing.
+2. **Set `CORS_ORIGIN`** to your frontend's origin(s), comma-separated. Left
+   unset it allows any origin.
+3. **Set `VITE_SERVER_URL`** at client build time to your public server URL.
+4. **Add a TURN server** via `VITE_TURN_URL` / `VITE_TURN_USERNAME` /
+   `VITE_TURN_CREDENTIAL`. STUN alone fails for peers behind symmetric NATs or
+   strict corporate firewalls, and it fails silently. This is the most common
+   reason a WebRTC app works in a demo and breaks in production.
+5. **Point `MONGODB_URI`** at your database (Atlas or self-hosted).
+
+Both packages ship a `.env.example` — copy it to `.env` and fill it in.
+
+**Server** — a `Dockerfile` is included:
+
+```bash
+docker build -t proxispeak-server ./server
+docker run -p 3000:3000 \
+  -e MONGODB_URI="mongodb+srv://..." \
+  -e CORS_ORIGIN="https://app.example.com" \
+  proxispeak-server
+```
+
+**Client** — `npm run build` in `client/` writes static files to `client/dist`;
+serve them from any static host (Netlify, Vercel, S3, nginx).
+
+**Not in place yet:** authentication (anyone can connect and set any name),
+Redis-backed multi-instance scaling, and video.
+
 ## 10. Progress
 
 | Phase | Focus | Status |

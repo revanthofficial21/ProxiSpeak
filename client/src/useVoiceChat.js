@@ -1,9 +1,19 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const ICE_SERVERS = [
-  { urls: "stun:stun.l.google.com:19302" },
-];
+const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+
+// Optional TURN relay. STUN alone is enough on a LAN or with friendly NATs, but
+// peers behind symmetric NATs or strict firewalls never connect without a
+// relay — and they fail silently. Configure VITE_TURN_* in client/.env.
+const turnUrl = import.meta.env.VITE_TURN_URL;
+if (turnUrl) {
+  ICE_SERVERS.push({
+    urls: turnUrl,
+    username: import.meta.env.VITE_TURN_USERNAME,
+    credential: import.meta.env.VITE_TURN_CREDENTIAL,
+  });
+}
 
 // Spatial audio: peers fade out with distance and pan by relative position.
 const PROXIMITY_RADIUS = 100;

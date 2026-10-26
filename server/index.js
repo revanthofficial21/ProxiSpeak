@@ -24,6 +24,7 @@ const {
   canRelayWebRtcSignal,
 } = require("./lib/meeting-call");
 const { createChatMessage } = require("./lib/chat");
+const { createRateLimiter } = require("./lib/rate-limit");
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -35,7 +36,15 @@ const mongoClient = new MongoClient(process.env.MONGODB_URI, {
 let db;
 let availableRooms = [];
 
-app.use(cors());
+// Browser origins allowed to connect. Comma-separated; "*" allows any origin,
+// which is convenient locally but should be set explicitly in production.
+const allowedOrigins = (process.env.CORS_ORIGIN || "*")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const corsOrigin = allowedOrigins.includes("*") ? true : allowedOrigins;
+
+app.use(cors({ origin: corsOrigin }));
 app.use(express.json());
 
 // The room catalog. This is a list only — players are not yet scoped to a
@@ -46,12 +55,17 @@ app.get("/api/rooms", (req, res) => {
 
 const io = new Server(httpServer, {
   cors: {
-    origin: ["http://localhost:5173", "http://localhost:5174"],
+    origin: corsOrigin,
     methods: ["GET", "POST"],
   },
 });
 
 const players = new Map();
+
+// Movement arrives ~25 times a second from an honest client; the burst is
+// generous but a flood is cut off. Chat is deliberately much stricter.
+const moveLimiter = createRateLimiter({ capacity: 80, refillPerSecond: 50 });
+const chatLimiter = createRateLimiter({ capacity: 5, refillPerSecond: 1 });
 
 // Tracks which players are currently within proximity of each other.
 // Drives the enter/leave events and gates the WebRTC signaling relay.
@@ -364,8 +378,25 @@ io.on("connection", (socket) => {
       );
 
       if (returningPlayer) {
+        // Restore everything the saved record holds, not just the position.
         currentPlayer.x = returningPlayer.x;
         currentPlayer.y = returningPlayer.y;
+
+        if (returningPlayer.avatarColor) {
+          currentPlayer.avatarColor = returningPlayer.avatarColor;
+        }
+        if (typeof returningPlayer.status === "string") {
+          currentPlayer.status = returningPlayer.status;
+        }
+
+        const restoredRoom = normalizeRoomName(returningPlayer.room);
+        if (restoredRoom && restoredRoom !== currentPlayer.room) {
+          // Move the socket into the restored space's channel.
+          const previousChannel = roomChannel(currentPlayer.room);
+          currentPlayer.room = restoredRoom;
+          socket.join(roomChannel(restoredRoom));
+          if (previousChannel) socket.leave(previousChannel);
+        }
       }
 
       const result = await db.collection("players").updateOne(
@@ -426,6 +457,8 @@ io.on("connection", (socket) => {
       return;
     }
 
+    if (!moveLimiter.take(socket.id)) return;
+
     const currentPlayer = players.get(socket.id);
     if (!currentPlayer) return;
 
@@ -482,6 +515,13 @@ io.on("connection", (socket) => {
 
   // World chat — broadcast a message to everyone in the world.
   socket.on("chat:send", (text, callback) => {
+    if (!chatLimiter.take(socket.id)) {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "Slow down — too many messages" });
+      }
+      return;
+    }
+
     const sender = players.get(socket.id);
     const base = createChatMessage(sender, text, `${socket.id}-${Date.now()}`);
 
@@ -649,6 +689,8 @@ io.on("connection", (socket) => {
     meetingCallParticipants.delete(socket.id);
     players.delete(socket.id);
     spawnSlots.delete(socket.id);
+    moveLimiter.forget(socket.id);
+    chatLimiter.forget(socket.id);
 
     // Let proximity peers tear down their audio connections.
     const nearSet = proximityState.get(socket.id);
@@ -732,3 +774,30 @@ async function startServer() {
 }
 
 startServer();
+
+// A single bad event must never take the whole server down.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection:", reason);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught exception — shutting down:", error);
+  shutdown("uncaughtException");
+});
+
+// Close sockets and the database cleanly so a restart doesn't leave
+// half-connected players behind.
+async function shutdown(signal) {
+  console.log(`${signal} received — shutting down.`);
+  try {
+    io.close();
+    httpServer.close();
+    await mongoClient.close();
+  } catch (error) {
+    console.error("Error during shutdown:", error.message);
+  }
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
