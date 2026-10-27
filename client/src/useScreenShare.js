@@ -16,10 +16,25 @@ const MEETING_ROOM = "Meeting Room";
 // Short browser description for on-screen diagnostics; the full UA goes to the
 // console. Screen capture support varies enough between builds that this matters.
 function describeBrowser() {
-  const match = navigator.userAgent.match(
-    /(Edg|Firefox|Chrome|Safari)\/([\d.]+)/
-  );
-  return match ? `${match[1]} ${match[2].split(".")[0]}` : "unknown browser";
+  const ua = navigator.userAgent;
+  const version = (pattern) => {
+    const match = ua.match(pattern);
+    return match ? match[1].split(".")[0] : "";
+  };
+
+  // Edge and Opera both carry "Chrome/" in their UA, so test them first.
+  if (/Edg\//.test(ua)) return `Edge ${version(/Edg\/([\d.]+)/)}`.trim();
+  if (/OPR\//.test(ua)) return `Opera ${version(/OPR\/([\d.]+)/)}`.trim();
+  if (/Firefox\//.test(ua)) return `Firefox ${version(/Firefox\/([\d.]+)/)}`.trim();
+  if (/Chrome\//.test(ua)) return `Chrome ${version(/Chrome\/([\d.]+)/)}`.trim();
+  if (/Safari\//.test(ua)) return `Safari ${version(/Version\/([\d.]+)/)}`.trim();
+  return "unknown browser";
+}
+
+// An embedded Chromium — VS Code's built-in preview, an Electron shell — reports
+// itself as Chrome and is a secure context, but cannot capture the screen.
+function isEmbeddedPreview() {
+  return /Electron|vscode|Code\/\d|HeadlessChrome/i.test(navigator.userAgent);
 }
 
 export default function useScreenShare(socket, activeRoomId) {
@@ -162,6 +177,14 @@ export default function useScreenShare(socket, activeRoomId) {
     if (!window.isSecureContext) {
       setScreenShareError(
         "Screen sharing needs a secure page — open the app on localhost or HTTPS."
+      );
+      return;
+    }
+
+    if (isEmbeddedPreview()) {
+      setScreenShareError(
+        "Screen sharing cannot run inside an embedded preview (VS Code or " +
+          "Electron). Open http://localhost:5173 in Chrome, Edge or Firefox."
       );
       return;
     }
