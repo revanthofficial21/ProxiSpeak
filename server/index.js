@@ -25,6 +25,7 @@ const {
 } = require("./lib/meeting-call");
 const { createChatMessage } = require("./lib/chat");
 const { createRateLimiter } = require("./lib/rate-limit");
+const { registerScreenShareHandlers } = require("./lib/screen-share");
 const {
   allocateSpawnPosition: pickSpawnPosition,
   clampPosition,
@@ -83,6 +84,9 @@ const lastNearbyCount = new Map();
 
 // Players currently in the Meeting Room call (talk regardless of distance).
 const meetingCallParticipants = new Set();
+
+// Active screen shares, keyed by the sharer's socket id.
+const activeShares = new Map();
 
 const WORLD_WIDTH = 1000;
 const WORLD_HEIGHT = 600;
@@ -694,6 +698,9 @@ io.on("connection", (socket) => {
     io.emit("player:status", { id: socket.id, status: nextStatus });
     reply({ success: true, status: nextStatus });
   });
+
+  // Screen sharing — Meeting Room only, with its own signaling handlers.
+  registerScreenShareHandlers(socket, { players, io, activeShares });
 
   // Mark the player disconnected.
   socket.on("disconnect", () => {

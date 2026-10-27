@@ -643,3 +643,102 @@ button:disabled {
 .peer-meter {
   max-width: 160px;
 }
+
+/* Screen sharing (Meeting Room) */
+.screen-share-panel {
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid #263449;
+  border-radius: 14px;
+  background: #0f172a;
+}
+
+.screen-share-header,
+.screen-share-tile-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.screen-share-header strong {
+  color: #6ee7b7;
+}
+
+.screen-share-header p,
+.screen-share-empty,
+.screen-share-pending {
+  margin: 5px 0 0;
+  color: #8190a6;
+  font-size: 12px;
+}
+
+.screen-share-header button {
+  flex: 0 0 auto;
+  min-height: 37px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 7px;
+  background: #34d399;
+  color: #06281d;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.screen-share-header button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.screen-share-error {
+  margin: 12px 0 0;
+  color: #fca5a5;
+  font-size: 12px;
+}
+
+.screen-share-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.screen-share-tile {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #263449;
+  border-radius: 10px;
+  background: #101827;
+}
+
+.screen-share-tile-heading {
+  min-height: 38px;
+  padding: 0 10px;
+  color: #e5edf8;
+  font-size: 12px;
+}
+
+.screen-share-tile-heading span {
+  color: #6ee7b7;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.screen-share-tile video {
+  display: block;
+  width: 100%;
+  max-height: 420px;
+  background: #05080e;
+  object-fit: contain;
+}
+
+.screen-share-pending {
+  padding: 16px 10px;
+}
+
+@media (max-width: 520px) {
+  .screen-share-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import useVoiceChat from "./useVoiceChat";
+import useScreenShare from "./useScreenShare";
 import "./App.css";
 
 const WORLD_WIDTH = 1000;
@@ -39,6 +40,46 @@ const plants = [
   { x: 62, y: 538 },
   { x: 938, y: 538 },
 ];
+
+// Renders one shared screen — local preview or a remote peer's stream.
+function ScreenShareVideo({ share, isLocal }) {
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return undefined;
+    video.srcObject = share.stream || null;
+    if (share.stream) {
+      video.play().catch((error) => {
+        console.warn("Screen share playback needs user interaction:", error);
+      });
+    }
+    return () => {
+      video.srcObject = null;
+    };
+  }, [share.stream]);
+
+  return (
+    <article className="screen-share-tile">
+      <div className="screen-share-tile-heading">
+        <strong>{isLocal ? "Your screen" : share.name}</strong>
+        {isLocal && <span>Sharing</span>}
+      </div>
+      {share.stream ? (
+        <video
+          ref={videoRef}
+          autoPlay
+          controls
+          muted={isLocal}
+          playsInline
+          aria-label={`${share.name}'s shared screen`}
+        />
+      ) : (
+        <p className="screen-share-pending">Connecting to shared screen…</p>
+      )}
+    </article>
+  );
+}
 
 // Solid things the avatar cannot walk through.
 const obstacles = [...desks, meetingTable, discussionTable, gameTable, ...sofas];
@@ -232,6 +273,15 @@ export default function App() {
     changeSpeakerVolume,
     resumeAudio,
   } = useVoiceChat(socket, nearbyPlayers, playersRef);
+
+  const {
+    isSharing,
+    startingShare,
+    screenShares,
+    screenShareError,
+    startScreenShare,
+    stopScreenShare,
+  } = useScreenShare(socket, activeRoomId);
 
   useEffect(() => {
     const client = io(SERVER_URL);
@@ -986,6 +1036,50 @@ export default function App() {
           Your space scopes who you can hear and chat with.
         </p>
       </section>
+
+      {activeRoomId === "Meeting Room" && (
+        <section className="screen-share-panel">
+          <div className="screen-share-header">
+            <div>
+              <strong>Meeting Room screens</strong>
+              <p>Share a screen, window or browser tab with this room.</p>
+            </div>
+            {isSharing ? (
+              <button type="button" onClick={stopScreenShare}>
+                Stop sharing
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={!connected || startingShare}
+                onClick={startScreenShare}
+              >
+                {startingShare ? "Starting…" : "Share screen"}
+              </button>
+            )}
+          </div>
+          {screenShareError && (
+            <p className="screen-share-error" role="alert">
+              {screenShareError}
+            </p>
+          )}
+          {screenShares.length === 0 ? (
+            <p className="screen-share-empty">
+              No one is sharing their screen right now.
+            </p>
+          ) : (
+            <div className="screen-share-grid">
+              {screenShares.map((share) => (
+                <ScreenShareVideo
+                  key={share.sharerId}
+                  share={share}
+                  isLocal={share.sharerId === socket?.id}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       <section className="chat-panel">
         <h2>World chat</h2>
