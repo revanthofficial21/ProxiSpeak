@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node tests/proximity.test.js && node tests/player-persistence.test.js && node tests/roomCatalog.test.js && node tests/rooms.test.js && node tests/meeting-call.test.js && node tests/chat.test.js && node tests/rate-limit.test.js && node tests/session.test.js && node tests/screen-share.test.js",
+    "test": "node tests/proximity.test.js && node tests/player-persistence.test.js && node tests/roomCatalog.test.js && node tests/rooms.test.js && node tests/meeting-call.test.js && node tests/chat.test.js && node tests/rate-limit.test.js && node tests/session.test.js && node tests/screen-share.test.js && node tests/contracts.test.js",
     "audit": "node audit.js",
     "audit:local": "node spatial-benchmark.js"
   },
