@@ -234,8 +234,9 @@ export default function useScreenShare(socket, activeRoomId) {
       socket.emit("screen:watch", { sharerId });
     };
 
-    const onList = ({ roomId, shares } = {}) => {
-      if (roomId !== MEETING_ROOM || roomRef.current !== MEETING_ROOM) {
+    // The server sends `room` (main's room name), not `roomId`.
+    const onList = ({ room, shares } = {}) => {
+      if (room !== MEETING_ROOM || roomRef.current !== MEETING_ROOM) {
         return;
       }
       const validShares = Array.isArray(shares)
