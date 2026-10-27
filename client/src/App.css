@@ -742,3 +742,124 @@ button:disabled {
     flex-direction: column;
   }
 }
+
+/* Landing page */
+.landing {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 56px 24px 40px;
+}
+
+.landing-hero { text-align: center; }
+
+.landing-eyebrow {
+  margin: 0 0 12px;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #34d399;
+}
+
+.landing-title {
+  margin: 0;
+  font-size: clamp(40px, 8vw, 68px);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  background: linear-gradient(120deg, #6ee7b7, #38bdf8 55%, #a78bfa);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.landing-lead {
+  max-width: 620px;
+  margin: 20px auto 0;
+  font-size: 17px;
+  line-height: 1.6;
+  color: #b6c2d4;
+}
+
+.landing-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 28px;
+}
+
+.landing-cta {
+  padding: 14px 32px;
+  border: 0;
+  border-radius: 10px;
+  background: linear-gradient(120deg, #34d399, #38bdf8);
+  color: #06281d;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.landing-cta:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(56, 189, 248, 0.25);
+}
+
+.landing-cta:active { transform: translateY(0); }
+
+.landing-hint { font-size: 12px; color: #8190a6; }
+
+.landing-features {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+  gap: 14px;
+  margin-top: 56px;
+}
+
+.landing-features article {
+  padding: 18px;
+  border: 1px solid #263449;
+  border-radius: 12px;
+  background: #0f172a;
+}
+
+.landing-features h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  color: #6ee7b7;
+}
+
+.landing-features p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #94a3b8;
+}
+
+.landing-steps {
+  margin-top: 44px;
+  padding: 22px;
+  border: 1px solid #263449;
+  border-radius: 12px;
+  background: #0f172a;
+}
+
+.landing-steps h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  color: #e2e8f0;
+}
+
+.landing-steps ol {
+  margin: 0;
+  padding-left: 20px;
+  color: #94a3b8;
+  font-size: 14px;
+  line-height: 1.9;
+}
+
+.landing-footer {
+  margin-top: 40px;
+  text-align: center;
+  font-size: 12px;
+  color: #64748b;
+}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import useVoiceChat from "./useVoiceChat";
 import useScreenShare from "./useScreenShare";
+import Landing from "./Landing";
 import {
   ZONES,
   desks,
@@ -217,6 +218,7 @@ export default function App() {
   const playersRef = useRef(new Map());
   const nearbyRef = useRef(new Set());
 
+  const [showLanding, setShowLanding] = useState(true);
   const [connected, setConnected] = useState(false);
   const [socket, setSocket] = useState(null);
   const [players, setPlayers] = useState([]);
@@ -718,6 +720,10 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  if (showLanding) {
+    return <Landing onEnter={() => setShowLanding(false)} />;
+  }
 
   return (
     <main className="app">
