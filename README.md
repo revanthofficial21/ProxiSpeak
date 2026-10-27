@@ -238,7 +238,7 @@ Redis-backed multi-instance scaling, and video.
 |---|---|---|
 | **Week 1** | Signaling & Movement — position broadcast, MongoDB geospatial schema, canvas world, keyboard movement | ✅ Done |
 | **Week 2** | Proximity Calculations (`$near`, 100px gating) + WebRTC Integration (`getUserMedia`, peer audio) | ✅ Done |
-| **Mid-Review** | Spatial Audit (sub-20ms proof) + Audio Check (two-browser demo) | 🟢 Audit PASS (200/200, 1 ms); Audio Check pending |
+| **Mid-Review** | Spatial Audit (sub-20ms proof) + Audio Check (two-browser demo) | ✅ Both complete — audit PASS (1 ms), audio verified live |
 | **Week 3** | Mesh Scaling (Redis Pub/Sub, multi-instance) + Dynamic Attenuation (Web Audio gain) | 🟡 Attenuation ✅ (spatial mixer); mesh scaling not started |
 | **Week 4** | Room Persistence (layouts + sound-blocking obstacles) + Polish (3D panning, 60 FPS) | 🟡 Spaces + Meeting Room call ✅; polish pending |
 | **Extras** | People list, world chat, avatar colour, speaker volume, resume-audio prompt | ✅ Done |

@@ -96,10 +96,10 @@ Week 3/4 candidate.
 ## Sign-off checklist
 
 - [x] `npm run audit` prints `RESULT: PASS` (correctness + under 20ms) — 25 Oct, server query max 1.00 ms
-- [ ] Two browsers both reach peer state `connected`
-- [ ] Two-way audio confirmed by ear
+- [x] Two browsers both reach peer state `connected` — 27 Oct
+- [x] Two-way audio confirmed by ear — 27 Oct, plus the live level meters
 - [x] Audit log captured as evidence (output recorded under Deliverable 3)
-- [ ] Audio Check screenshot / recording captured as evidence
+- [x] Audio Check screenshot captured as evidence (voice panel, peer `connected`)
 
 ---
 
@@ -143,8 +143,24 @@ metric being judged.
 A MongoDB-free fallback is also available: `npm run audit:local`
 (`server/spatial-benchmark.js`) — the same 100px filter, 200/200 correct, max ~1.4 ms.
 
-**Deliverable 4 — Audio Check: built, run pending.**
-Run-book above; needs two browsers. Capture the screen recording.
+**Deliverable 4 — Audio Check: COMPLETE.**
+
+Run on 27 Oct with two browser windows against the live server:
+
+- both clients connected and were named (`rev`, `pooji`); the reconnect restore
+  reported `MongoDB matched: 1` for each
+- proximity detected them live — `Nearby players for rev : 1`
+- the WebRTC peer reached state `connected` in both windows
+- audio was confirmed: the peer's live level meter moved when the other person
+  spoke, and the delayed echo was audible with headphones
+
+Evidence: the voice-panel screenshot (peer `connected`, speaker volume 100%) and
+the server log. A screen recording is still worth capturing for the review pack.
+
+> Note for single-machine testing: both windows share one microphone and one
+> output, so the browser's echo cancellation suppresses the loopback and you may
+> hear nothing even though audio is flowing. The level meters exist to make that
+> visible — or wear headphones.
 
 The consolidated pack is `Mid-Review-Evidence.docx`.
 
@@ -160,5 +176,6 @@ with real room scoping (`player:joinRoom`), and the Meeting Room call
 (`meeting:join` / `meeting:leave` with live participant updates). Switching space
 scopes proximity, chat, and WebRTC to that space.
 
-**Still to run:** the two-browser Audio Check (needs two browsers). `npm run audit`
-passed on 25 Oct — see Deliverable 3.
+**All four deliverables are complete.** The Spatial Audit passed on 25 Oct
+(`RESULT: PASS`, ~1 ms) and the Audio Check on 27 Oct — two browsers, peer state
+`connected`, audio confirmed by ear and by the live level meters.
