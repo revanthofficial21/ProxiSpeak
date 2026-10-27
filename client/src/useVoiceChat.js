@@ -19,6 +19,26 @@ if (turnUrl) {
 const PROXIMITY_RADIUS = 100;
 const MAX_GAIN = 1;
 
+// Audio-level metering. An AnalyserNode taps a stream without affecting the
+// signal, so the meter reflects exactly what is being heard.
+function createLevelAnalyser(ctx) {
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 256;
+  analyser.smoothingTimeConstant = 0.6;
+  return analyser;
+}
+
+// Root-mean-square of the waveform, scaled so normal speech fills the meter.
+function readLevel(analyser, buffer) {
+  analyser.getByteTimeDomainData(buffer);
+  let sum = 0;
+  for (let i = 0; i < buffer.length; i += 1) {
+    const value = (buffer[i] - 128) / 128;
+    sum += value * value;
+  }
+  return Math.min(1, Math.sqrt(sum / buffer.length) * 4);
+}
+
 export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("Voice chat disabled");
@@ -26,8 +46,11 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
   const [muted, setMuted] = useState(false);
   const [speakerVolume, setSpeakerVolume] = useState(100);
   const [audioOutputBlocked, setAudioOutputBlocked] = useState(false);
+  const [peerLevels, setPeerLevels] = useState({});
+  const [micLevel, setMicLevel] = useState(0);
 
   const streamRef = useRef(null);
+  const micAnalyserRef = useRef(null);
   const peersRef = useRef(new Map());
   const nearbyRef = useRef(nearbyPlayers);
   const pendingCandidatesRef = useRef(new Map());
@@ -97,6 +120,10 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
 
       source.connect(gain);
 
+      // A parallel tap for the level meter — connected to nothing downstream.
+      const analyser = createLevelAnalyser(ctx);
+      source.connect(analyser);
+
       let panner = null;
       if (typeof ctx.createStereoPanner === "function") {
         panner = ctx.createStereoPanner();
@@ -106,7 +133,7 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
         gain.connect(ctx.destination);
       }
 
-      mixerRef.current.set(peerId, { source, gain, panner });
+      mixerRef.current.set(peerId, { source, gain, panner, analyser });
     },
     [ensureAudioContext, detachMixer]
   );
@@ -231,6 +258,14 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
       });
 
       streamRef.current = stream;
+
+      // Meter the local microphone too, so "is my mic working?" is visible.
+      const micCtx = ensureAudioContext();
+      if (micCtx) {
+        const micAnalyser = createLevelAnalyser(micCtx);
+        micCtx.createMediaStreamSource(stream).connect(micAnalyser);
+        micAnalyserRef.current = micAnalyser;
+      }
       setVoiceEnabled(true);
       setVoiceStatus("Microphone enabled — waiting for nearby players");
 
@@ -258,6 +293,9 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
 
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
+    micAnalyserRef.current = null;
+    setMicLevel(0);
+    setPeerLevels({});
     pendingCandidatesRef.current.clear();
     setVoiceEnabled(false);
     setMuted(false);
@@ -453,6 +491,8 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
   // peer's left/right offset from the local player.
   useEffect(() => {
     let frame;
+    let lastLevelSample = 0;
+    const levelBuffer = new Uint8Array(256);
 
     const mix = () => {
       const ctx = audioContextRef.current;
@@ -509,6 +549,22 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
         }
       }
 
+      // Sample the meters a few times a second, not on every frame.
+      if (performance.now() - lastLevelSample > 120) {
+        lastLevelSample = performance.now();
+        const buffer = levelBuffer;
+        const nextLevels = {};
+        for (const [peerId, nodes] of mixerRef.current.entries()) {
+          nextLevels[peerId] = nodes.analyser
+            ? readLevel(nodes.analyser, buffer)
+            : 0;
+        }
+        setPeerLevels(nextLevels);
+        setMicLevel(
+          micAnalyserRef.current ? readLevel(micAnalyserRef.current, buffer) : 0
+        );
+      }
+
       frame = requestAnimationFrame(mix);
     };
 
@@ -537,6 +593,8 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
     voiceEnabled,
     voiceStatus,
     peerStates,
+    peerLevels,
+    micLevel,
     muted,
     speakerVolume,
     audioOutputBlocked,

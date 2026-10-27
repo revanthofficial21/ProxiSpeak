@@ -221,6 +221,8 @@ export default function App() {
     voiceEnabled,
     voiceStatus,
     peerStates,
+    peerLevels,
+    micLevel,
     muted,
     speakerVolume,
     audioOutputBlocked,
@@ -875,13 +877,36 @@ export default function App() {
           Enable your microphone and move within 100 pixels of another player
           to connect.
         </p>
+        {voiceEnabled && (
+          <div className="mic-meter">
+            <span className="meter-label">Your mic</span>
+            <span className="meter-track">
+              <span
+                className="meter-fill"
+                style={{ width: `${Math.round(micLevel * 100)}%` }}
+              />
+            </span>
+          </div>
+        )}
         {Object.keys(peerStates).length > 0 && (
-          <ul>
-            {Object.entries(peerStates).map(([playerId, state]) => (
-              <li key={playerId}>
-                {`Player ${playerId.slice(0, 4)}`} — {state}
-              </li>
-            ))}
+          <ul className="peer-list">
+            {Object.entries(peerStates).map(([playerId, state]) => {
+              const peer = players.find((p) => p.id === playerId);
+              const level = peerLevels[playerId] || 0;
+              return (
+                <li key={playerId} className="peer-item">
+                  <span className="peer-name">
+                    {peer?.name || `Player ${playerId.slice(0, 4)}`} — {state}
+                  </span>
+                  <span className="meter-track peer-meter">
+                    <span
+                      className="meter-fill"
+                      style={{ width: `${Math.round(level * 100)}%` }}
+                    />
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>
