@@ -152,10 +152,26 @@ export default function useScreenShare(socket, activeRoomId) {
     setStartingShare(true);
     let stream;
     try {
-      stream = await getDisplayMedia.call(navigator.mediaDevices, {
-        video: true,
-        audio: true,
-      });
+      // Chrome on Windows (and some other platforms) rejects a screen capture
+      // that also asks for system audio. Try with audio, then fall back to video
+      // only — the voice chat already carries the microphone.
+      try {
+        stream = await getDisplayMedia.call(navigator.mediaDevices, {
+          video: true,
+          audio: true,
+        });
+      } catch (audioError) {
+        if (
+          audioError.name === "NotAllowedError" ||
+          audioError.name === "PermissionDeniedError"
+        ) {
+          // The user declined — don't prompt a second time.
+          throw audioError;
+        }
+        stream = await getDisplayMedia.call(navigator.mediaDevices, {
+          video: true,
+        });
+      }
       if (roomRef.current !== MEETING_ROOM || !socket.connected) {
         stream.getTracks().forEach((track) => track.stop());
         setStartingShare(false);
@@ -189,7 +205,9 @@ export default function useScreenShare(socket, activeRoomId) {
         setScreenShareError("No screen, window, or tab is available to share.");
       } else {
         console.error("Could not access screen capture:", error);
-        setScreenShareError("Could not start screen sharing. Check browser permissions.");
+        setScreenShareError(
+          `Could not start screen sharing (${error.name || "unknown error"}). Check browser permissions.`
+        );
       }
     }
   }, [
