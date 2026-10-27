@@ -152,25 +152,36 @@ export default function useScreenShare(socket, activeRoomId) {
     setStartingShare(true);
     let stream;
     try {
-      // Chrome on Windows (and some other platforms) rejects a screen capture
-      // that also asks for system audio. Try with audio, then fall back to video
-      // only — the voice chat already carries the microphone.
-      try {
-        stream = await getDisplayMedia.call(navigator.mediaDevices, {
-          video: true,
-          audio: true,
-        });
-      } catch (audioError) {
-        if (
-          audioError.name === "NotAllowedError" ||
-          audioError.name === "PermissionDeniedError"
-        ) {
-          // The user declined — don't prompt a second time.
-          throw audioError;
+      // Try progressively simpler constraint sets. Browsers reject a screen
+      // capture with NotSupportedError when a constraint they can't honour is
+      // present — classically `audio: true` (Firefox/Safari, Chrome on some
+      // platforms). The last attempt passes no constraints at all.
+      const attempts = [
+        { video: true, audio: true },
+        { video: true },
+        undefined,
+      ];
+      let lastError = null;
+      for (const constraints of attempts) {
+        try {
+          stream = constraints
+            ? await getDisplayMedia.call(navigator.mediaDevices, constraints)
+            : await getDisplayMedia.call(navigator.mediaDevices);
+          lastError = null;
+          break;
+        } catch (attemptError) {
+          lastError = attemptError;
+          // A real denial must never be retried — that re-prompts the user.
+          if (
+            attemptError.name === "NotAllowedError" ||
+            attemptError.name === "PermissionDeniedError"
+          ) {
+            break;
+          }
         }
-        stream = await getDisplayMedia.call(navigator.mediaDevices, {
-          video: true,
-        });
+      }
+      if (!stream) {
+        throw lastError || new Error("Screen capture is unavailable");
       }
       if (roomRef.current !== MEETING_ROOM || !socket.connected) {
         stream.getTracks().forEach((track) => track.stop());
@@ -204,9 +215,16 @@ export default function useScreenShare(socket, activeRoomId) {
       } else if (error.name === "NotFoundError") {
         setScreenShareError("No screen, window, or tab is available to share.");
       } else {
-        console.error("Could not access screen capture:", error);
+        console.error("Could not access screen capture:", error, {
+          errorName: error.name,
+          errorMessage: error.message,
+          userAgent: navigator.userAgent,
+          secureContext: window.isSecureContext,
+          getDisplayMedia: typeof navigator.mediaDevices?.getDisplayMedia,
+        });
         setScreenShareError(
-          `Could not start screen sharing (${error.name || "unknown error"}). Check browser permissions.`
+          `Could not start screen sharing (${error.name || "unknown error"}). ` +
+            "See the browser console for details."
         );
       }
     }
