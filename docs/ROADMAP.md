@@ -85,3 +85,38 @@ tier by 5 Nov and defers the three large items.
 
 Port Vivek's volume + resume-audio prompt onto `main`, then run the full bug sweep
 (parse, both test suites, client bundle, duplicate check) and report.
+
+---
+
+## Current state (27 Oct)
+
+**Mid-review: 4/4 complete** — proximity, WebRTC integration, the spatial audit
+(`RESULT: PASS`, ~1 ms) and the Audio Check (two browsers, audio verified by meter
+and by ear).
+
+**Built since this plan was written** — most of what the sections above list as
+"deferred" now exists:
+
+- **Rooms / spaces** — real room scoping (`player:joinRoom`); proximity, chat and
+  WebRTC are all scoped per space, plus a Meeting Room call that works regardless of
+  distance with live participant updates.
+- **Chat** — room-scoped, rate-limited.
+- **Office map** — five labelled zones with furniture, graded proximity rings,
+  initials avatars.
+- **People list & profile** — presence, avatar colour, status line.
+- **Screen sharing** — Meeting Room only, ported from Vivek's branch.
+- **Occlusion** — furniture between two players muffles the voice (gain + low-pass).
+  This is the brief's Week-4 "sound-blocking obstacles".
+- **Resilience & deploy** — global error handling, graceful shutdown, rate limiting,
+  configurable CORS, optional TURN, `.env.example`, Dockerfile, a Deploying section.
+
+**Still open**
+
+- **Landing page** — the last mockup panel not built.
+- **Video** (camera, not screen sharing) — deferred.
+- **Redis mesh** — single instance today; the adapter is not wired.
+- **Room persistence** — the furniture layout lives in the client; moving it into
+  MongoDB would let layouts be saved and shared.
+- **Deploy** — needs HTTPS, TURN credentials and a host.
+
+**Tests:** 10 server suites plus the client occlusion suite, all passing.

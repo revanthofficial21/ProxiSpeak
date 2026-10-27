@@ -1,5 +1,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { obstacles } from "./office";
+import {
+  isSoundBlocked,
+  occlusionSettings,
+  CLEAR_LOWPASS_HZ,
+} from "./occlusion";
 
 const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 
@@ -118,7 +124,15 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
       const gain = ctx.createGain();
       gain.gain.value = 0; // silent until the mixer sets it by distance
 
+      // Occlusion: a low-pass between the gain and the output dulls a voice that
+      // has furniture in the way, the way a wall does.
+      const lowpass = ctx.createBiquadFilter();
+      lowpass.type = "lowpass";
+      lowpass.frequency.value = CLEAR_LOWPASS_HZ;
+      lowpass.Q.value = 0.7;
+
       source.connect(gain);
+      gain.connect(lowpass);
 
       // A parallel tap for the level meter — connected to nothing downstream.
       const analyser = createLevelAnalyser(ctx);
@@ -127,13 +141,13 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
       let panner = null;
       if (typeof ctx.createStereoPanner === "function") {
         panner = ctx.createStereoPanner();
-        gain.connect(panner);
+        lowpass.connect(panner);
         panner.connect(ctx.destination);
       } else {
-        gain.connect(ctx.destination);
+        lowpass.connect(ctx.destination);
       }
 
-      mixerRef.current.set(peerId, { source, gain, panner, analyser });
+      mixerRef.current.set(peerId, { source, gain, lowpass, panner, analyser });
     },
     [ensureAudioContext, detachMixer]
   );
@@ -528,15 +542,25 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
             const dy = peer.y - local.y;
             const distance = Math.hypot(dx, dy);
 
+            // Furniture in the way muffles the voice: less gain, duller tone.
+            const { gainScale, lowpassHz } = occlusionSettings(
+              isSoundBlocked(local, peer, obstacles)
+            );
+
             // Linear fall-off: full volume at 0px, silent at the radius edge,
-            // scaled by the user's master speaker volume.
+            // scaled by the master speaker volume and any occlusion.
             const targetGain =
               MAX_GAIN *
               speakerVolumeRef.current *
+              gainScale *
               Math.max(0, Math.min(1, 1 - distance / PROXIMITY_RADIUS));
 
             // setTargetAtTime smooths the change, avoiding zipper clicks.
             nodes.gain.gain.setTargetAtTime(targetGain, now, 0.05);
+
+            if (nodes.lowpass) {
+              nodes.lowpass.frequency.setTargetAtTime(lowpassHz, now, 0.08);
+            }
 
             if (nodes.panner) {
               const targetPan = Math.max(

@@ -2,6 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import useVoiceChat from "./useVoiceChat";
 import useScreenShare from "./useScreenShare";
+import {
+  ZONES,
+  desks,
+  meetingTable,
+  discussionTable,
+  gameTable,
+  sofas,
+  plants,
+  obstacles,
+} from "./office";
 import "./App.css";
 
 const WORLD_WIDTH = 1000;
@@ -10,36 +20,6 @@ const SERVER_URL = import.meta.env.VITE_SERVER_URL || "http://localhost:3000";
 const SPEED = 240;
 const AVATAR_RADIUS = 20;
 const DEFAULT_AVATAR_COLOR = "#6ee7b7";
-
-// Named areas of the office, drawn as tinted panels with labels.
-const ZONES = [
-  { name: "Open Workspace", x: 40, y: 40, w: 440, h: 290, tint: "#16263c", accent: "#38bdf8" },
-  { name: "Meeting Room", x: 560, y: 40, w: 400, h: 250, tint: "#2a2418", accent: "#fbbf24" },
-  { name: "Discussion Area", x: 500, y: 330, w: 250, h: 230, tint: "#241f33", accent: "#a78bfa" },
-  { name: "Lounge", x: 40, y: 370, w: 420, h: 190, tint: "#152a24", accent: "#34d399" },
-  { name: "Game Zone", x: 780, y: 330, w: 180, h: 230, tint: "#2a1a26", accent: "#f472b6" },
-];
-
-const desks = [
-  { x: 90, y: 110, width: 120, height: 55 },
-  { x: 280, y: 110, width: 120, height: 55 },
-  { x: 90, y: 235, width: 120, height: 55 },
-  { x: 280, y: 235, width: 120, height: 55 },
-];
-const meetingTable = { x: 610, y: 120, width: 300, height: 110 };
-const discussionTable = { x: 570, y: 400, width: 110, height: 110 };
-const gameTable = { x: 810, y: 395, width: 120, height: 100 };
-const sofas = [
-  { x: 80, y: 400, width: 150, height: 42 },
-  { x: 80, y: 495, width: 150, height: 42 },
-];
-const plants = [
-  { x: 62, y: 62 },
-  { x: 456, y: 62 },
-  { x: 938, y: 62 },
-  { x: 62, y: 538 },
-  { x: 938, y: 538 },
-];
 
 // Renders one shared screen — local preview or a remote peer's stream.
 function ScreenShareVideo({ share, isLocal }) {
@@ -81,8 +61,6 @@ function ScreenShareVideo({ share, isLocal }) {
   );
 }
 
-// Solid things the avatar cannot walk through.
-const obstacles = [...desks, meetingTable, discussionTable, gameTable, ...sofas];
 
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
