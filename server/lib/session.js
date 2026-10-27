@@ -81,10 +81,24 @@ function diffProximity(previous, nextIds) {
   return { entered, left, next };
 }
 
+// Hysteresis: a peer enters at the enter radius, but only leaves once past the
+// wider leave radius. Without this, a player hovering at the boundary thrashes
+// proximity:enter/leave — creating and tearing down a WebRTC peer each time.
+function isWithinProximity({
+  distance,
+  isAlreadyNearby = false,
+  enterRadius,
+  leaveRadius = enterRadius,
+}) {
+  if (!Number.isFinite(distance)) return false;
+  return isAlreadyNearby ? distance <= leaveRadius : distance <= enterRadius;
+}
+
 module.exports = {
   MAX_NAME_LENGTH,
   allocateSpawnPosition,
   clampPosition,
   normalizeDisplayName,
   diffProximity,
+  isWithinProximity,
 };

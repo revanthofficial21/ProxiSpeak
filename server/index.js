@@ -30,6 +30,7 @@ const {
   clampPosition,
   normalizeDisplayName,
   diffProximity,
+  isWithinProximity,
 } = require("./lib/session");
 
 const app = express();
@@ -77,12 +78,17 @@ const chatLimiter = createRateLimiter({ capacity: 5, refillPerSecond: 1 });
 // Drives the enter/leave events and gates the WebRTC signaling relay.
 const proximityState = new Map();
 
+// Last nearby count per socket, so we only log when it changes.
+const lastNearbyCount = new Map();
+
 // Players currently in the Meeting Room call (talk regardless of distance).
 const meetingCallParticipants = new Set();
 
 const WORLD_WIDTH = 1000;
 const WORLD_HEIGHT = 600;
 const PROXIMITY_RADIUS = 100;
+// Hysteresis: connect at 100px, but only disconnect past 115px.
+const PROXIMITY_LEAVE_RADIUS = 115;
 const DEFAULT_AVATAR_COLOR = "#6ee7b7";
 const HEX_COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const PLAYER_RADIUS = 20;
@@ -144,6 +150,9 @@ function relaySignal(event, fromId, toId, payload) {
 // Group a player by proximity: send them the nearby list and tell both sides
 // who just entered / left range. Run on connect and on every move.
 async function syncProximity(socketId, player) {
+  // Peers already in range get the wider leave radius (hysteresis).
+  const oldNearby = proximityState.get(socketId) || new Set();
+
   const nearbyPlayers = await db
     .collection("players")
     .find({
@@ -151,17 +160,27 @@ async function syncProximity(socketId, player) {
       connected: true,
       location: {
         $near: [player.x, player.y],
-        $maxDistance: PROXIMITY_RADIUS,
+        $maxDistance: PROXIMITY_LEAVE_RADIUS,
       },
     })
     .project({ _id: 0, socketId: 1, name: 1, avatarColor: 1, x: 1, y: 1 })
     .toArray();
 
-  // Keep only peers in the SAME space — rooms scope who can hear whom.
+  // Same space only — and hysteresis, so hovering at the edge doesn't thrash.
   const nearbyList = nearbyPlayers
     .filter((nearbyPlayer) => {
       const peer = players.get(nearbyPlayer.socketId);
-      return peer && peer.room === player.room;
+      if (!peer || peer.room !== player.room) return false;
+
+      return isWithinProximity({
+        distance: Math.hypot(
+          nearbyPlayer.x - player.x,
+          nearbyPlayer.y - player.y
+        ),
+        isAlreadyNearby: oldNearby.has(nearbyPlayer.socketId),
+        enterRadius: PROXIMITY_RADIUS,
+        leaveRadius: PROXIMITY_LEAVE_RADIUS,
+      });
     })
     .map((nearbyPlayer) => ({
       id: nearbyPlayer.socketId,
@@ -174,7 +193,6 @@ async function syncProximity(socketId, player) {
 
   io.to(socketId).emit("player:nearby", nearbyList);
 
-  const oldNearby = proximityState.get(socketId) || new Set();
   const {
     entered,
     left,
@@ -488,12 +506,16 @@ io.on("connection", (socket) => {
       // Group users by proximity and report to both sides.
       const nearbyCount = await syncProximity(socket.id, updatedPlayer);
 
-      console.log(
-        "Nearby players for",
-        updatedPlayer.name || updatedPlayer.id,
-        ":",
-        nearbyCount
-      );
+      // Only log transitions — one line per move drowns the console.
+      if (lastNearbyCount.get(socket.id) !== nearbyCount) {
+        lastNearbyCount.set(socket.id, nearbyCount);
+        console.log(
+          "Nearby players for",
+          updatedPlayer.name || updatedPlayer.id,
+          ":",
+          nearbyCount
+        );
+      }
     } catch (error) {
       console.error(
         "Failed to update position/find nearby players:",
@@ -680,6 +702,7 @@ io.on("connection", (socket) => {
     spawnSlots.delete(socket.id);
     moveLimiter.forget(socket.id);
     chatLimiter.forget(socket.id);
+    lastNearbyCount.delete(socket.id);
 
     // Let proximity peers tear down their audio connections.
     const nearSet = proximityState.get(socket.id);

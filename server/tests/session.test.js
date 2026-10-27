@@ -4,6 +4,7 @@ const {
   clampPosition,
   normalizeDisplayName,
   diffProximity,
+  isWithinProximity,
 } = require("../lib/session");
 
 let failures = 0;
@@ -138,6 +139,39 @@ const noChange = diffProximity(new Set(["a"]), ["a"]);
 check(
   "diff with no change reports nothing",
   noChange.entered.length === 0 && noChange.left.length === 0
+);
+
+// --- proximity hysteresis ---------------------------------------------
+
+const radii = { enterRadius: 100, leaveRadius: 115 };
+
+check(
+  "enters inside the enter radius",
+  isWithinProximity({ distance: 99, ...radii }) === true
+);
+check(
+  "does not enter outside the enter radius",
+  isWithinProximity({ distance: 101, ...radii }) === false
+);
+check(
+  "enters exactly on the enter radius",
+  isWithinProximity({ distance: 100, ...radii }) === true
+);
+check(
+  "stays connected while already nearby and inside the leave radius",
+  isWithinProximity({ distance: 110, isAlreadyNearby: true, ...radii }) === true
+);
+check(
+  "drops out past the leave radius",
+  isWithinProximity({ distance: 116, isAlreadyNearby: true, ...radii }) === false
+);
+check(
+  "a distant peer inside the leave radius does not newly enter",
+  isWithinProximity({ distance: 110, ...radii }) === false
+);
+check(
+  "non-finite distance is never nearby",
+  isWithinProximity({ distance: Number.NaN, ...radii }) === false
 );
 
 console.log(
