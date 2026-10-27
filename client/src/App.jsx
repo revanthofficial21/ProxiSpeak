@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import useVoiceChat from "./useVoiceChat";
+import useScreenShare from "./useScreenShare";
 import "./App.css";
 
 const WORLD_WIDTH = 1000;
@@ -9,6 +10,45 @@ const SERVER_URL = import.meta.env.VITE_SERVER_URL || "http://localhost:3000";
 const SPEED = 240;
 const AVATAR_RADIUS = 20;
 const DEFAULT_AVATAR_COLOR = "#6ee7b7";
+
+function ScreenShareVideo({ share, isLocal }) {
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return undefined;
+    video.srcObject = share.stream || null;
+    if (share.stream) {
+      video.play().catch((error) => {
+        console.warn("Screen share playback needs user interaction:", error);
+      });
+    }
+    return () => {
+      video.srcObject = null;
+    };
+  }, [share.stream]);
+
+  return (
+    <article className="screen-share-tile">
+      <div className="screen-share-tile-heading">
+        <strong>{isLocal ? "Your screen" : share.name}</strong>
+        {isLocal && <span>Sharing</span>}
+      </div>
+      {share.stream ? (
+        <video
+          ref={videoRef}
+          autoPlay
+          controls
+          muted={isLocal}
+          playsInline
+          aria-label={`${share.name}'s shared screen`}
+        />
+      ) : (
+        <p className="screen-share-pending">Connecting to shared screen…</p>
+      )}
+    </article>
+  );
+}
 
 const obstacles = [
   { x: 100, y: 120, width: 120, height: 55 },
@@ -70,23 +110,32 @@ export default function App() {
   const gameFocusedRef = useRef(false);
   const playersRef = useRef(new Map());
   const nearbyRef = useRef(new Set());
+  const pendingChatRef = useRef(null);
+  const savedDisplayNameRef = useRef("");
+  const seenPresenceIdsRef = useRef(new Set());
+  const presenceTimersRef = useRef(new Map());
 
   const [connected, setConnected] = useState(false);
   const [socket, setSocket] = useState(null);
   const [players, setPlayers] = useState([]);
   const [nearbyPlayers, setNearbyPlayers] = useState([]);
   const [chatMessages, setChatMessages] = useState([]);
+  const [chatHistoryLoading, setChatHistoryLoading] = useState(true);
+  const [chatHistoryError, setChatHistoryError] = useState("");
   const [chatInput, setChatInput] = useState("");
   const [chatError, setChatError] = useState("");
   const [rooms, setRooms] = useState([]);
   const [activeRoomId, setActiveRoomId] = useState("");
   const [roomsLoading, setRoomsLoading] = useState(true);
   const [roomsError, setRoomsError] = useState("");
+  const [roomActionError, setRoomActionError] = useState("");
+  const [switchingRoom, setSwitchingRoom] = useState(false);
   const [sendingChat, setSendingChat] = useState(false);
   const [displayName, setDisplayName] = useState("");
   const [profileError, setProfileError] = useState("");
   const [savingName, setSavingName] = useState(false);
   const [savingColor, setSavingColor] = useState(false);
+  const [presenceNotifications, setPresenceNotifications] = useState([]);
   const getLocalPlayerPosition = useCallback(() => {
     const playerId = socketRef.current?.id;
     const player = playerId ? playersRef.current.get(playerId) : null;
@@ -121,19 +170,39 @@ export default function App() {
     updateSpeakerVolume,
     resumeAudio,
   } = useVoiceChat(socket, nearbyPlayers, getLocalPlayerPosition);
+  const {
+    isSharing,
+    startingShare,
+    screenShares,
+    screenShareError,
+    startScreenShare,
+    stopScreenShare,
+  } = useScreenShare(socket, activeRoomId);
 
   useEffect(() => {
     const client = io(SERVER_URL);
     socketRef.current = client;
     setSocket(client);
+    const presenceTimers = presenceTimersRef.current;
 
-    client.on("connect", () => setConnected(true));
+    client.on("connect", () => {
+      setConnected(true);
+      if (savedDisplayNameRef.current) {
+        client.emit("player:setName", savedDisplayNameRef.current);
+      }
+    });
     client.on("disconnect", () => {
       setConnected(false);
       playersRef.current.clear();
       nearbyRef.current.clear();
       setPlayers([]);
       setNearbyPlayers([]);
+      setChatHistoryLoading(false);
+      for (const timer of presenceTimers.values()) {
+        window.clearTimeout(timer);
+      }
+      presenceTimers.clear();
+      setPresenceNotifications([]);
     });
     client.on("world:state", (list) => {
       if (!Array.isArray(list)) return;
@@ -145,7 +214,18 @@ export default function App() {
       const playerList = Array.from(playersRef.current.values());
       setPlayers(playerList);
       const ownPlayer = playerList.find((player) => player.id === client.id);
-      if (ownPlayer) setDisplayName(ownPlayer.name || "");
+      if (ownPlayer) {
+        setDisplayName(ownPlayer.name || "");
+        if (typeof ownPlayer.name === "string" && ownPlayer.name.trim()) {
+          savedDisplayNameRef.current = ownPlayer.name;
+        }
+        if (typeof ownPlayer.roomId === "string") {
+          setActiveRoomId(ownPlayer.roomId);
+        }
+      }
+      setChatMessages([]);
+      setChatHistoryLoading(true);
+      setChatHistoryError("");
     });
     client.on("player:joined", (player) => {
       if (!player || typeof player.id !== "string") return;
@@ -162,7 +242,10 @@ export default function App() {
       if (!player || typeof player.id !== "string") return;
       playersRef.current.set(player.id, player);
       setPlayers(Array.from(playersRef.current.values()));
-      if (player.id === client.id) setDisplayName(player.name || "");
+      if (player.id === client.id) {
+        setDisplayName(player.name || "");
+        savedDisplayNameRef.current = player.name || "";
+      }
     });
     client.on("player:avatarColorUpdated", (player) => {
       if (!player || typeof player.id !== "string") return;
@@ -210,21 +293,110 @@ export default function App() {
         current.filter((player) => player.id !== playerId)
       );
     });
+    client.on("room:presence", (notification) => {
+      if (
+        !notification ||
+        typeof notification.eventId !== "string" ||
+        typeof notification.roomId !== "string" ||
+        typeof notification.playerId !== "string" ||
+        typeof notification.displayName !== "string" ||
+        !notification.displayName.trim() ||
+        !["joined", "left"].includes(notification.action) ||
+        seenPresenceIdsRef.current.has(notification.eventId)
+      ) {
+        return;
+      }
+
+      seenPresenceIdsRef.current.add(notification.eventId);
+      if (seenPresenceIdsRef.current.size > 100) {
+        const oldestEventId = seenPresenceIdsRef.current.values().next().value;
+        seenPresenceIdsRef.current.delete(oldestEventId);
+      }
+
+      setPresenceNotifications((current) => [
+        ...current.slice(-2),
+        notification,
+      ]);
+      const timer = window.setTimeout(() => {
+        setPresenceNotifications((current) =>
+          current.filter((entry) => entry.eventId !== notification.eventId)
+        );
+        presenceTimersRef.current.delete(notification.eventId);
+      }, 5000);
+      presenceTimersRef.current.set(notification.eventId, timer);
+    });
     client.on("chat:message", (message) => {
       if (
         !message ||
         typeof message.id !== "string" ||
         typeof message.senderId !== "string" ||
+        typeof message.roomId !== "string" ||
         typeof message.text !== "string" ||
         typeof message.timestamp !== "string"
       ) {
         return;
       }
-      setChatMessages((current) => [...current, message]);
+      const currentRoomId = playersRef.current.get(client.id)?.roomId;
+      if (message.roomId !== currentRoomId) return;
+      setChatMessages((current) =>
+        current.some((existing) => existing.id === message.id)
+          ? current
+          : [...current, message]
+      );
+    });
+    client.on("chat:history", (history) => {
+      if (!history || typeof history !== "object") return;
+      const { roomId, messages } = history;
+      const currentRoomId = playersRef.current.get(client.id)?.roomId;
+      if (roomId !== currentRoomId || !Array.isArray(messages)) return;
+      const validMessages = messages.filter(
+        (message) =>
+          message &&
+          typeof message.id === "string" &&
+          typeof message.senderId === "string" &&
+          message.roomId === roomId &&
+          typeof message.text === "string" &&
+          typeof message.timestamp === "string"
+      );
+      setChatMessages((current) => {
+        const mergedMessages = new Map(
+          validMessages.map((message) => [message.id, message])
+        );
+        current
+          .filter((message) => message.roomId === roomId)
+          .forEach((message) => {
+            if (!mergedMessages.has(message.id)) {
+              mergedMessages.set(message.id, message);
+            }
+          });
+        return Array.from(mergedMessages.values()).sort(
+          (first, second) =>
+            new Date(first.timestamp).getTime() -
+            new Date(second.timestamp).getTime()
+        );
+      });
+      setChatHistoryLoading(false);
+      setChatHistoryError("");
+    });
+    client.on("chat:history:error", (historyError) => {
+      if (!historyError || typeof historyError !== "object") return;
+      const { roomId, error } = historyError;
+      const currentRoomId = playersRef.current.get(client.id)?.roomId;
+      if (roomId !== currentRoomId) return;
+      setChatHistoryLoading(false);
+      setChatHistoryError(
+        typeof error === "string"
+          ? error
+          : "Could not load chat history. Try switching rooms."
+      );
     });
 
     return () => {
       client.disconnect();
+      for (const timer of presenceTimers.values()) {
+        window.clearTimeout(timer);
+      }
+      presenceTimers.clear();
       socketRef.current = null;
     };
   }, []);
@@ -282,6 +454,29 @@ export default function App() {
 
   const activeRoom = rooms.find((room) => room.id === activeRoomId);
 
+  const selectRoom = (roomId) => {
+    const client = socketRef.current;
+    if (!client?.connected || switchingRoom || roomId === activeRoomId) return;
+
+    setSwitchingRoom(true);
+    setRoomActionError("");
+    setChatHistoryLoading(true);
+    setChatHistoryError("");
+    client.timeout(5000).emit("room:join", roomId, (timeoutError, result) => {
+      setSwitchingRoom(false);
+      if (timeoutError || !result?.success) {
+        setChatHistoryLoading(false);
+        setRoomActionError(
+          result?.error || "Could not switch rooms. Try again."
+        );
+        return;
+      }
+      setActiveRoomId(result.roomId);
+      setChatError("");
+      pendingChatRef.current = null;
+    });
+  };
+
   const saveDisplayName = (event) => {
     event.preventDefault();
     const name = displayName.trim();
@@ -303,6 +498,7 @@ export default function App() {
         setProfileError(result?.error || "Could not save your display name. Try again.");
         return;
       }
+      savedDisplayNameRef.current = result.name;
       setDisplayName(result.name);
     });
   };
@@ -364,14 +560,28 @@ export default function App() {
 
     setChatError("");
     setSendingChat(true);
-    client.timeout(5000).emit("chat:send", text, (timeoutError, result) => {
-      setSendingChat(false);
-      if (timeoutError || !result?.success) {
-        setChatError(result?.error || "Could not send your message. Try again.");
-        return;
+    if (pendingChatRef.current?.text !== text) {
+      pendingChatRef.current = { text, id: crypto.randomUUID() };
+    }
+    const clientMessageId = pendingChatRef.current.id;
+    client.timeout(5000).emit(
+      "chat:send",
+      text,
+      clientMessageId,
+      (timeoutError, result) => {
+        setSendingChat(false);
+        if (timeoutError || !result?.success) {
+          setChatError(
+            result?.error || "Could not send your message. Try again."
+          );
+          return;
+        }
+        if (pendingChatRef.current?.id === clientMessageId) {
+          pendingChatRef.current = null;
+        }
+        setChatInput((current) => (current.trim() === text ? "" : current));
       }
-      setChatInput((current) => (current.trim() === text ? "" : current));
-    });
+    );
   };
 
   useEffect(() => {
@@ -547,6 +757,17 @@ export default function App() {
         </div>
       </header>
 
+      <div className="presence-notifications" aria-label="Room activity">
+        {presenceNotifications
+          .filter((notification) => notification.roomId === activeRoomId)
+          .map((notification) => (
+            <p className="presence-toast" key={notification.eventId} role="status">
+              <strong>{notification.displayName}</strong>{" "}
+              {notification.action === "joined" ? "joined the room" : "left the room"}
+            </p>
+          ))}
+      </div>
+
       <section className="intro">
         <div>
           <p className="eyebrow">YOUR SHARED SPACE</p>
@@ -635,7 +856,8 @@ export default function App() {
                   type="button"
                   className={`room-button${room.id === activeRoomId ? " selected" : ""}`}
                   aria-pressed={room.id === activeRoomId}
-                  onClick={() => setActiveRoomId(room.id)}
+                  disabled={!connected || switchingRoom}
+                  onClick={() => selectRoom(room.id)}
                 >
                   {room.name}
                 </button>
@@ -645,14 +867,64 @@ export default function App() {
         )}
         {activeRoom && (
           <p className="active-room-label" aria-live="polite">
-            Selected room: <strong>{activeRoom.name}</strong>
+            Current room: <strong>{activeRoom.name}</strong>
           </p>
         )}
-        <p className="rooms-note">
-          Room selection is currently a UI preference; players, chat, and voice
-          remain in the existing shared world.
-        </p>
+        {switchingRoom && (
+          <p className="rooms-message" role="status">
+            Switching rooms…
+          </p>
+        )}
+        {roomActionError && (
+          <p className="rooms-error" role="alert">
+            {roomActionError}
+          </p>
+        )}
       </section>
+
+      {activeRoomId === "meeting-room" && (
+        <section className="screen-share-panel" aria-labelledby="screen-share-heading">
+          <div className="screen-share-header">
+            <div>
+              <strong id="screen-share-heading">Meeting Room screens</strong>
+              <p>Share a screen, window, or browser tab with this room.</p>
+            </div>
+            {isSharing ? (
+              <button type="button" onClick={stopScreenShare}>
+                Stop sharing
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={!connected || startingShare}
+                onClick={startScreenShare}
+              >
+                {startingShare ? "Starting…" : "Share screen"}
+              </button>
+            )}
+          </div>
+          {screenShareError && (
+            <p className="screen-share-error" role="alert">
+              {screenShareError}
+            </p>
+          )}
+          {screenShares.length === 0 ? (
+            <p className="screen-share-empty">
+              No one is sharing their screen right now.
+            </p>
+          ) : (
+            <div className="screen-share-grid">
+              {screenShares.map((share) => (
+                <ScreenShareVideo
+                  key={share.sharerId}
+                  share={share}
+                  isLocal={share.sharerId === socket?.id}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       <div className="world-layout">
         <section className="world-card">
@@ -694,7 +966,7 @@ export default function App() {
           <div className="chat-header">
             <div>
               <strong id="chat-heading">World chat</strong>
-              <p>Messages are shared with everyone online</p>
+              <p>Messages are shared with players in this room</p>
             </div>
             <span className={`chat-status${connected ? " connected" : ""}`}>
               {connected ? "Connected" : "Offline"}
@@ -708,9 +980,17 @@ export default function App() {
             aria-relevant="additions"
             aria-label="World chat messages"
           >
-            {chatMessages.length === 0 ? (
+            {chatHistoryLoading ? (
+              <p className="chat-empty" role="status">
+                Loading chat history…
+              </p>
+            ) : chatHistoryError ? (
+              <p className="chat-empty" role="alert">
+                {chatHistoryError}
+              </p>
+            ) : chatMessages.length === 0 ? (
               <p className="chat-empty">
-                No messages yet. Say hello to everyone in the world.
+                No messages yet. Say hello to everyone in this room.
               </p>
             ) : (
               chatMessages.map((message) => {
@@ -721,9 +1001,9 @@ export default function App() {
                 const time = new Date(message.timestamp);
                 const timeLabel = Number.isNaN(time.getTime())
                   ? ""
-                  : time.toLocaleTimeString([], {
-                      hour: "numeric",
-                      minute: "2-digit",
+                  : time.toLocaleString([], {
+                      dateStyle: "short",
+                      timeStyle: "short",
                     });
 
                 return (
@@ -758,7 +1038,7 @@ export default function App() {
               maxLength={500}
               rows={2}
               placeholder="Write a message…"
-              disabled={!connected || sendingChat}
+              disabled={!connected || sendingChat || switchingRoom}
               onChange={(event) => {
                 setChatInput(event.target.value);
                 if (chatError) setChatError("");
@@ -768,7 +1048,12 @@ export default function App() {
               <span>{chatInput.length}/500</span>
               <button
                 type="submit"
-                disabled={!connected || sendingChat || !chatInput.trim()}
+                disabled={
+                  !connected ||
+                  sendingChat ||
+                  switchingRoom ||
+                  !chatInput.trim()
+                }
               >
                 {sendingChat ? "Sending…" : "Send"}
               </button>
@@ -786,7 +1071,7 @@ export default function App() {
         <div className="people-header">
           <div>
             <strong id="people-heading">People</strong>
-            <p>Players currently in this world</p>
+            <p>Players currently in this room</p>
           </div>
           <span className="people-count">
             {players.length} online

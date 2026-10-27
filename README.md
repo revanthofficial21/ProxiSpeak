@@ -88,6 +88,9 @@ ProxiSpeak/
 │   ├── db.js                   # MongoDB connection helper
 │   ├── proximity.js            # Pure-JS proximity oracle (reference implementation)
 │   ├── proximity.test.js       # Proximity unit tests
+│   ├── roomHandler.js          # Validated Socket.IO room switching
+│   ├── roomHandler.test.js     # Room switching and isolation tests
+│   ├── roomUtils.js             # Room channels and membership helpers
 │   └── audit.js                # Spatial audit — correctness + latency benchmark
 │
 ├── WebRTC-Research.md          # WebRTC research notes
@@ -104,17 +107,24 @@ ProxiSpeak/
    furniture collision) and broadcasts `player:move` (throttled ~40 ms). The
    server clamps the position, persists it, and broadcasts `player:moved`.
 3. **Proximity.** On each move the server runs a MongoDB `$near` query with a
-   **100px** `$maxDistance` to find who is within earshot, and emits
-   `proximity:enter` / `proximity:leave` to **both** players as they come into or
-   leave range.
+   **100px** `$maxDistance` and the player's room ID to find who is within
+   earshot in that room, and emits `proximity:enter` / `proximity:leave` to
+   **both** players as they come into or leave range.
 4. **Signaling.** Clients exchange `voice:offer` / `voice:answer` /
    `voice:ice-candidate` through the server, which **relays them only between
-   players within proximity**. The peer with the lower socket id initiates,
-   avoiding glare. `voice:leave` tears down the peer when voice is disabled or
-   players leave proximity.
+   nearby players in the same room**. The peer with the lower socket id
+   initiates, avoiding glare. `voice:leave` tears down the peer when voice is
+   disabled, players leave proximity, or a player switches rooms.
 5. **Audio.** A `RTCPeerConnection` is established per nearby peer; remote audio
    plays through its own audio element. *(Next: route it through the Web Audio
    API for distance-based gain and panning.)*
+6. **Rooms.** Players join `open-world`, `meeting-room`, or `lounge` through
+   Socket.IO room membership. Presence, movement, nearby-player updates, chat,
+   and voice signaling are isolated to players in that room.
+7. **Screen sharing.** In the Meeting Room, participants can explicitly start
+   browser screen capture and share it with that room through separate,
+   room-validated WebRTC connections. Capture stops on the browser's stop
+   control, when leaving the room, or on disconnect.
 
 ## 7. Data Model
 
@@ -126,14 +136,23 @@ The `players` collection (MongoDB):
 | `name` | string | Display name |
 | `x`, `y` | number | Avatar position in the 1000×600 world |
 | `location` | `[x, y]` | Geospatial point — indexed with a `2d` index (`min: 0, max: 1000`) |
+| `roomId` | string | Current room; used to scope proximity queries and presence |
 | `connected` | boolean | Whether the player is currently connected |
 | `createdAt` / `updatedAt` | Date | Timestamps |
 
 The `rooms` collection stores the available room catalog. The server creates
 the built-in rooms (`open-world`, `meeting-room`, and `lounge`) idempotently
 with unique IDs and room names, then serves the catalog at `GET /api/rooms`.
-The frontend displays the available room names. This catalog does not yet
-assign players to rooms or isolate movement, chat, proximity, or voice.
+The `room:join` event validates selections against this catalog, persists the
+player's `roomId`, and moves their Socket.IO membership. Presence, movement,
+chat, nearby-player detection, and voice signaling are room-scoped.
+
+The `chatMessages` collection stores each message's ID, sender ID and name,
+room ID, text, and timestamp. The server enforces a 500-character limit and
+stores messages before broadcasting them. On connection and room changes, the
+server loads the latest 100 messages for that room and returns them in
+chronological order. A sender-scoped client message ID and unique MongoDB index
+make retries idempotent.
 
 ## 8. Realtime Events
 
@@ -141,8 +160,14 @@ assign players to rooms or isolate movement, chat, proximity, or voice.
 
 | Event | Payload |
 |---|---|
+| `room:join` | `roomId` (callback returns success/error and active room ID) |
+| `screen:start` / `screen:stop` | Start or stop a Meeting Room share |
+| `screen:watch` | `{ sharerId }` |
+| `screen:offer` / `screen:answer` | WebRTC descriptions with target and share IDs |
+| `screen:ice-candidate` | Room-restricted ICE candidate |
 | `player:setName` | `name` |
 | `player:move` | `{ x, y }` |
+| `chat:send` | `text`, unique client message ID (callback returns success/error) |
 | `voice:ready` | `{ targetId }` |
 | `voice:offer` | `{ targetId, offer }` |
 | `voice:answer` | `{ targetId, answer }` |
@@ -153,7 +178,12 @@ assign players to rooms or isolate movement, chat, proximity, or voice.
 
 | Event | Payload |
 |---|---|
-| `world:state` | array of players |
+| `world:state` | array of players in the current room |
+| `chat:history` | `{ roomId, messages }` (up to 100 messages, oldest first) |
+| `chat:history:error` | `{ roomId, error }` |
+| `chat:message` | Persisted message for the sender's room |
+| `screen:available` / `screen:stopped` | Room-local screen-share presence |
+| `screen:offer` / `screen:answer` / `screen:ice-candidate` | Screen WebRTC signaling |
 | `player:joined` / `player:moved` / `player:left` | player / id |
 | `player:renamed` | player |
 | `player:nearby` | array of nearby players |
@@ -187,6 +217,13 @@ Keep real credentials private and out of version control. Start the backend:
 npm run dev
 ```
 
+For MongoDB Atlas, make sure the cluster is active, your current public IP is
+allowed in the Atlas network access list, and outbound connections to port
+27017 are not blocked. If startup reports a TLS handshake failure, check those
+network settings and confirm that `MONGODB_URI` is the connection string for
+the active cluster. The server always loads configuration from `server/.env`,
+even when started from the repository root.
+
 ### Frontend
 
 ```bash
@@ -211,7 +248,7 @@ voice connections should follow the 100px proximity boundary.
 |---|---|---|
 | `server` | `npm run dev` | Start backend with nodemon |
 | `server` | `npm start` | Start backend |
-| `server` | `npm test` | Run proximity unit tests |
+| `server` | `npm test` | Run proximity, room catalog, and room switching tests |
 | `server` | `npm run audit` | Run the spatial audit (correctness + latency) |
 | `client` | `npm run dev` | Start the Vite dev server |
 | `client` | `npm run build` | Production build |
@@ -223,11 +260,12 @@ voice connections should follow the 100px proximity boundary.
 | **Week 1** | Signaling & Movement — position broadcast, MongoDB geospatial schema, canvas world, keyboard movement | ✅ Done |
 | **Week 2** | Proximity Calculations (`$near`, 100px gating) + WebRTC Integration (`getUserMedia`, peer audio) | ✅ Done |
 | **Mid-Review** | Spatial Audit (sub-20ms proof) + Audio Check (two-browser demo) | 🟡 Tooling ready — execution/evidence pending |
-| **Week 3** | Mesh Scaling (Redis Pub/Sub, multi-instance) + Dynamic Attenuation (Web Audio gain) | ⬜ Not started |
+| **Week 3** | Room-based multiplayer; Mesh Scaling (Redis Pub/Sub) + Dynamic Attenuation (Web Audio gain) | 🟡 Rooms implemented; scaling and attenuation pending |
 | **Week 4** | Room Persistence (layouts + sound-blocking obstacles) + Polish (3D panning, 60 FPS) | ⬜ Not started |
 
-**Working today:** live multiplayer movement, MongoDB `$near` proximity grouping,
-proximity-gated WebRTC signaling, and peer-to-peer audio between nearby avatars.
+**Working today:** live multiplayer movement in isolated rooms, room-specific
+chat and presence, MongoDB `$near` proximity grouping, same-room WebRTC
+signaling, and peer-to-peer audio between nearby avatars.
 
 **Not yet built:** the Web Audio spatial mixer (gain/panning), Redis-backed mesh
 scaling, room/furniture persistence, and sound occlusion.
