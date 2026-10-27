@@ -13,6 +13,15 @@ if (turnUrl) {
 }
 const MEETING_ROOM = "Meeting Room";
 
+// Short browser description for on-screen diagnostics; the full UA goes to the
+// console. Screen capture support varies enough between builds that this matters.
+function describeBrowser() {
+  const match = navigator.userAgent.match(
+    /(Edg|Firefox|Chrome|Safari)\/([\d.]+)/
+  );
+  return match ? `${match[1]} ${match[2].split(".")[0]}` : "unknown browser";
+}
+
 export default function useScreenShare(socket, activeRoomId) {
   const [isSharing, setIsSharing] = useState(false);
   const [startingShare, setStartingShare] = useState(false);
@@ -144,7 +153,16 @@ export default function useScreenShare(socket, activeRoomId) {
     if (localStreamRef.current || startingShare) return;
     const getDisplayMedia = navigator.mediaDevices?.getDisplayMedia;
     if (typeof getDisplayMedia !== "function") {
-      setScreenShareError("Screen sharing is not supported in this browser.");
+      setScreenShareError(
+        `Screen sharing is not supported in this browser (${describeBrowser()}).`
+      );
+      return;
+    }
+
+    if (!window.isSecureContext) {
+      setScreenShareError(
+        "Screen sharing needs a secure page — open the app on localhost or HTTPS."
+      );
       return;
     }
 
@@ -223,8 +241,10 @@ export default function useScreenShare(socket, activeRoomId) {
           getDisplayMedia: typeof navigator.mediaDevices?.getDisplayMedia,
         });
         setScreenShareError(
-          `Could not start screen sharing (${error.name || "unknown error"}). ` +
-            "See the browser console for details."
+          `Screen capture was refused (${error.name || "unknown error"}) by ` +
+            `${describeBrowser()} · secure page: ${
+              window.isSecureContext ? "yes" : "no"
+            } · details in the console.`
         );
       }
     }
