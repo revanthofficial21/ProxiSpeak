@@ -932,6 +932,15 @@ input {
   text-align: center;
 }
 
+.chat-typing-indicator {
+  min-height: 18px;
+  margin: 0;
+  padding: 0 13px 10px;
+  color: #6ee7b7;
+  font-size: 11px;
+  font-style: italic;
+}
+
 .chat-message {
   display: flex;
   align-items: flex-start;

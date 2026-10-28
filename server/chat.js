@@ -69,7 +69,7 @@ async function sendRoomChatHistory(socket, db, players, roomId) {
   }
 }
 
-function registerChatHandlers(socket, { db, players, io }) {
+function registerChatHandlers(socket, { db, players, io, onMessageSending }) {
   socket.on("chat:send", async (messageText, clientMessageId, callback) => {
     const respond = (result) => {
       if (typeof callback === "function") callback(result);
@@ -108,6 +108,8 @@ function registerChatHandlers(socket, { db, players, io }) {
       timestamp,
       clientMessageId: clientMessageId.trim(),
     };
+
+    if (typeof onMessageSending === "function") onMessageSending();
 
     try {
       await db.collection("chatMessages").insertOne(messageDocument);

@@ -22,6 +22,7 @@ const {
   registerChatHandlers,
   sendRoomChatHistory,
 } = require("./chat");
+const { registerChatTypingHandlers } = require("./chatTyping");
 const {
   registerScreenShareHandlers,
   stopActiveScreenShare,
@@ -262,7 +263,13 @@ io.on("connection", (socket) => {
     .emit("player:joined", publicPlayer(player));
   emitNearbyPlayers();
 
-  registerChatHandlers(socket, { db, players, io });
+  const clearChatTyping = registerChatTypingHandlers(socket, { players, io });
+  registerChatHandlers(socket, {
+    db,
+    players,
+    io,
+    onMessageSending: clearChatTyping,
+  });
   registerScreenShareHandlers(socket, {
     players,
     io,
@@ -275,6 +282,7 @@ io.on("connection", (socket) => {
     io,
     publicPlayer,
     onRoomLeaving: async (socketId, previousRoomId) => {
+      clearChatTyping();
       if (previousRoomId === "meeting-room") {
         stopActiveScreenShare(
           socketId,

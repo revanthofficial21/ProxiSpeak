@@ -2,6 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import useVoiceChat from "./useVoiceChat";
 import useScreenShare from "./useScreenShare";
+import {
+  formatTypingIndicator,
+  updateTypingUsers,
+} from "./typingIndicators";
 import "./App.css";
 
 const WORLD_WIDTH = 1000;
@@ -120,6 +124,7 @@ export default function App() {
   const [players, setPlayers] = useState([]);
   const [nearbyPlayers, setNearbyPlayers] = useState([]);
   const [chatMessages, setChatMessages] = useState([]);
+  const [typingUsers, setTypingUsers] = useState({});
   const [chatHistoryLoading, setChatHistoryLoading] = useState(true);
   const [chatHistoryError, setChatHistoryError] = useState("");
   const [chatInput, setChatInput] = useState("");
@@ -193,6 +198,7 @@ export default function App() {
     });
     client.on("disconnect", () => {
       setConnected(false);
+      setTypingUsers({});
       playersRef.current.clear();
       nearbyRef.current.clear();
       setPlayers([]);
@@ -224,6 +230,7 @@ export default function App() {
         }
       }
       setChatMessages([]);
+      setTypingUsers({});
       setChatHistoryLoading(true);
       setChatHistoryError("");
     });
@@ -390,8 +397,20 @@ export default function App() {
           : "Could not load chat history. Try switching rooms."
       );
     });
+    const handleChatTyping = (notification) => {
+      setTypingUsers((current) =>
+        updateTypingUsers(
+          current,
+          notification,
+          playersRef.current.get(client.id)?.roomId || "",
+          client.id
+        )
+      );
+    };
+    client.on("chat:typing", handleChatTyping);
 
     return () => {
+      client.off("chat:typing", handleChatTyping);
       client.disconnect();
       for (const timer of presenceTimers.values()) {
         window.clearTimeout(timer);
@@ -560,6 +579,7 @@ export default function App() {
 
     setChatError("");
     setSendingChat(true);
+    client.emit("chat:typing", { isTyping: false });
     if (pendingChatRef.current?.text !== text) {
       pendingChatRef.current = { text, id: crypto.randomUUID() };
     }
@@ -1041,9 +1061,17 @@ export default function App() {
               disabled={!connected || sendingChat || switchingRoom}
               onChange={(event) => {
                 setChatInput(event.target.value);
+                socketRef.current?.emit("chat:typing", {
+                  isTyping: Boolean(event.target.value.trim()),
+                });
                 if (chatError) setChatError("");
               }}
             />
+            {formatTypingIndicator(typingUsers) && (
+              <p className="chat-typing-indicator" role="status">
+                {formatTypingIndicator(typingUsers)}
+              </p>
+            )}
             <div className="chat-compose-footer">
               <span>{chatInput.length}/500</span>
               <button
