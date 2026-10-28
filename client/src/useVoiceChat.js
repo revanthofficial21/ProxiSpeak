@@ -1,6 +1,5 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { obstacles } from "./office";
 import {
   isSoundBlocked,
   occlusionSettings,
@@ -49,7 +48,7 @@ export default function useVoiceChat(
   socket,
   nearbyPlayers,
   positionsRef,
-  { micDeviceId = "" } = {}
+  { micDeviceId = "", obstacles = [] } = {}
 ) {
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("Voice chat disabled");
@@ -62,6 +61,7 @@ export default function useVoiceChat(
 
   const streamRef = useRef(null);
   const micAnalyserRef = useRef(null);
+  const obstaclesRef = useRef(obstacles);
   const peersRef = useRef(new Map());
   const nearbyRef = useRef(nearbyPlayers);
   const pendingCandidatesRef = useRef(new Map());
@@ -73,6 +73,11 @@ export default function useVoiceChat(
   useEffect(() => {
     nearbyRef.current = nearbyPlayers;
   }, [nearbyPlayers]);
+
+  // The room layout can change while the loop runs; a ref keeps it current.
+  useEffect(() => {
+    obstaclesRef.current = obstacles;
+  }, [obstacles]);
 
   // Create (and resume) the shared AudioContext. Browsers start it suspended,
   // so this is called from the enableVoice click (a user gesture).
@@ -553,7 +558,7 @@ export default function useVoiceChat(
 
             // Furniture in the way muffles the voice: less gain, duller tone.
             const { gainScale, lowpassHz } = occlusionSettings(
-              isSoundBlocked(local, peer, obstacles)
+              isSoundBlocked(local, peer, obstaclesRef.current)
             );
 
             // Linear fall-off: full volume at 0px, silent at the radius edge,

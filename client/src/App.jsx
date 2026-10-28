@@ -4,16 +4,8 @@ import useVoiceChat from "./useVoiceChat";
 import useScreenShare from "./useScreenShare";
 import useAudioDevices from "./useAudioDevices";
 import Landing from "./Landing";
-import {
-  ZONES,
-  desks,
-  meetingTable,
-  discussionTable,
-  gameTable,
-  sofas,
-  plants,
-  obstacles,
-} from "./office";
+import { DEFAULT_LAYOUT, furnitureOf, zonesOf, plantsOf } from "./office";
+import useRoomLayout from "./useRoomLayout";
 import "./App.css";
 
 const WORLD_WIDTH = 1000;
@@ -74,8 +66,106 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-// Draws the whole office: floor grid, named zones, furniture and walls.
-function drawOffice(ctx) {
+// Each piece of furniture is drawn by kind — the server validates the kind before
+// it ever reaches here, so an unknown one is simply skipped.
+function drawDesk(ctx, piece) {
+  ctx.fillStyle = "#334155";
+  roundRect(ctx, piece.x, piece.y, piece.width, piece.height, 6);
+  ctx.fill();
+  ctx.strokeStyle = "#475569";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = "#0ea5e9";
+  ctx.fillRect(piece.x + 44, piece.y + 10, 34, 20);
+  ctx.fillStyle = "#1e293b";
+  ctx.beginPath();
+  ctx.arc(piece.x + piece.width / 2, piece.y + piece.height + 16, 12, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawMeetingTable(ctx, piece) {
+  ctx.fillStyle = "#7c5a1e";
+  roundRect(ctx, piece.x, piece.y, piece.width, piece.height, 14);
+  ctx.fill();
+  ctx.strokeStyle = "#fbbf24";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.fillStyle = "#1e293b";
+  const seats = Math.max(2, Math.floor(piece.width / 70));
+  const step = seats > 1 ? (piece.width - 90) / (seats - 1) : 0;
+  for (let i = 0; i < seats; i += 1) {
+    const cx = piece.x + 45 + i * step;
+    ctx.beginPath();
+    ctx.arc(cx, piece.y - 14, 11, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx, piece.y + piece.height + 14, 11, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawDiscussionTable(ctx, piece) {
+  const cx = piece.x + piece.width / 2;
+  const cy = piece.y + piece.height / 2;
+  const radius = piece.width / 2;
+
+  ctx.fillStyle = "#3b3560";
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#a78bfa";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.fillStyle = "#1e293b";
+  for (let i = 0; i < 6; i += 1) {
+    const angle = (i / 6) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.arc(
+      cx + Math.cos(angle) * (radius + 13),
+      cy + Math.sin(angle) * (radius + 13),
+      10,
+      0,
+      Math.PI * 2
+    );
+    ctx.fill();
+  }
+}
+
+function drawGameTable(ctx, piece) {
+  ctx.fillStyle = "#14532d";
+  roundRect(ctx, piece.x, piece.y, piece.width, piece.height, 10);
+  ctx.fill();
+  ctx.strokeStyle = "#4ade80";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+function drawSofa(ctx, piece) {
+  ctx.fillStyle = "#334155";
+  roundRect(ctx, piece.x, piece.y, piece.width, piece.height, 10);
+  ctx.fill();
+  ctx.strokeStyle = "#475569";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+const FURNITURE_DRAWERS = {
+  desk: drawDesk,
+  "meeting-table": drawMeetingTable,
+  "discussion-table": drawDiscussionTable,
+  "game-table": drawGameTable,
+  sofa: drawSofa,
+};
+
+// Draws the whole office: floor grid, named zones, furniture and walls. The layout
+// comes from the server when it is available, and from the built-in copy otherwise.
+function drawOffice(ctx, layout) {
+  const zones = zonesOf(layout);
+  const furniture = furnitureOf(layout);
+  const plants = plantsOf(layout);
+
   ctx.fillStyle = "#0f1622";
   ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
 
@@ -94,7 +184,7 @@ function drawOffice(ctx) {
     ctx.stroke();
   }
 
-  for (const zone of ZONES) {
+  for (const zone of zones) {
     ctx.fillStyle = zone.tint;
     ctx.fillRect(zone.x, zone.y, zone.w, zone.h);
     ctx.globalAlpha = 0.4;
@@ -109,69 +199,9 @@ function drawOffice(ctx) {
     ctx.fillText(zone.name.toUpperCase(), zone.x + 12, zone.y + 22);
   }
 
-  for (const desk of desks) {
-    ctx.fillStyle = "#334155";
-    roundRect(ctx, desk.x, desk.y, desk.width, desk.height, 6);
-    ctx.fill();
-    ctx.strokeStyle = "#475569";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.fillStyle = "#0ea5e9";
-    ctx.fillRect(desk.x + 44, desk.y + 10, 34, 20);
-    ctx.fillStyle = "#1e293b";
-    ctx.beginPath();
-    ctx.arc(desk.x + desk.width / 2, desk.y + desk.height + 16, 12, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  ctx.fillStyle = "#7c5a1e";
-  roundRect(ctx, meetingTable.x, meetingTable.y, meetingTable.width, meetingTable.height, 14);
-  ctx.fill();
-  ctx.strokeStyle = "#fbbf24";
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.fillStyle = "#1e293b";
-  for (let i = 0; i < 4; i += 1) {
-    const cx = meetingTable.x + 45 + i * 70;
-    ctx.beginPath();
-    ctx.arc(cx, meetingTable.y - 14, 11, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(cx, meetingTable.y + meetingTable.height + 14, 11, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  const dcx = discussionTable.x + discussionTable.width / 2;
-  const dcy = discussionTable.y + discussionTable.height / 2;
-  ctx.fillStyle = "#3b3560";
-  ctx.beginPath();
-  ctx.arc(dcx, dcy, discussionTable.width / 2, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = "#a78bfa";
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.fillStyle = "#1e293b";
-  for (let i = 0; i < 6; i += 1) {
-    const angle = (i / 6) * Math.PI * 2;
-    ctx.beginPath();
-    ctx.arc(dcx + Math.cos(angle) * 68, dcy + Math.sin(angle) * 68, 10, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  ctx.fillStyle = "#14532d";
-  roundRect(ctx, gameTable.x, gameTable.y, gameTable.width, gameTable.height, 10);
-  ctx.fill();
-  ctx.strokeStyle = "#4ade80";
-  ctx.lineWidth = 2;
-  ctx.stroke();
-
-  for (const sofa of sofas) {
-    ctx.fillStyle = "#334155";
-    roundRect(ctx, sofa.x, sofa.y, sofa.width, sofa.height, 10);
-    ctx.fill();
-    ctx.strokeStyle = "#475569";
-    ctx.lineWidth = 2;
-    ctx.stroke();
+  for (const piece of furniture) {
+    const draw = FURNITURE_DRAWERS[piece.kind];
+    if (draw) draw(ctx, piece);
   }
 
   for (const plant of plants) {
@@ -190,8 +220,8 @@ function drawOffice(ctx) {
   ctx.lineWidth = 1;
 }
 
-function hitsObstacle(x, y) {
-  return obstacles.some((obstacle) => {
+function hitsObstacle(x, y, furniture) {
+  return furniture.some((obstacle) => {
     const closestX = Math.max(
       obstacle.x,
       Math.min(x, obstacle.x + obstacle.width)
@@ -239,6 +269,11 @@ export default function App() {
   const [chatError, setChatError] = useState("");
   const [rooms, setRooms] = useState([]);
   const [activeRoomId, setActiveRoomId] = useState("");
+
+  // The room's furniture comes from the server; the built-in copy is the fallback.
+  const roomId =
+    rooms.find((room) => room.name === activeRoomId)?.id || "open-world";
+  const { layout, layoutRef } = useRoomLayout(roomId);
   const [roomsError, setRoomsError] = useState("");
   const [roomError, setRoomError] = useState("");
   const [meetingParticipants, setMeetingParticipants] = useState([]);
@@ -257,7 +292,10 @@ export default function App() {
     changeSpeakerVolume,
     changeOutputDevice,
     resumeAudio,
-  } = useVoiceChat(socket, nearbyPlayers, playersRef, { micDeviceId });
+  } = useVoiceChat(socket, nearbyPlayers, playersRef, {
+    micDeviceId,
+    obstacles: furnitureOf(layout),
+  });
 
   const { microphones, speakers } = useAudioDevices(voiceEnabled);
 
@@ -493,9 +531,14 @@ export default function App() {
           );
 
           // If we somehow start inside furniture, let the player walk out.
-          const stuck = hitsObstacle(current.x, current.y);
-          if (stuck || !hitsObstacle(nextX, current.y)) current.x = nextX;
-          if (stuck || !hitsObstacle(current.x, nextY)) current.y = nextY;
+          const furniture = furnitureOf(layoutRef.current);
+          const stuck = hitsObstacle(current.x, current.y, furniture);
+          if (stuck || !hitsObstacle(nextX, current.y, furniture)) {
+            current.x = nextX;
+          }
+          if (stuck || !hitsObstacle(current.x, nextY, furniture)) {
+            current.y = nextY;
+          }
 
           if (timestamp - lastSent > 40) {
             client.emit("player:move", { x: current.x, y: current.y });
@@ -504,7 +547,7 @@ export default function App() {
         }
       }
 
-      drawOffice(ctx);
+      drawOffice(ctx, layoutRef.current);
       const me = client ? playersRef.current.get(client.id) : null;
 
       for (const player of playersRef.current.values()) {

@@ -20,9 +20,9 @@ const DEFAULT_FURNITURE = [
   { kind: "desk", x: 280, y: 110, width: 120, height: 55 },
   { kind: "desk", x: 90, y: 235, width: 120, height: 55 },
   { kind: "desk", x: 280, y: 235, width: 120, height: 55 },
-  { kind: "table", x: 610, y: 120, width: 300, height: 110 },
-  { kind: "table", x: 570, y: 400, width: 110, height: 110 },
-  { kind: "table", x: 810, y: 395, width: 120, height: 100 },
+  { kind: "meeting-table", x: 610, y: 120, width: 300, height: 110 },
+  { kind: "discussion-table", x: 570, y: 400, width: 110, height: 110 },
+  { kind: "game-table", x: 810, y: 395, width: 120, height: 100 },
   { kind: "sofa", x: 80, y: 400, width: 150, height: 42 },
   { kind: "sofa", x: 80, y: 495, width: 150, height: 42 },
 ];
@@ -37,7 +37,14 @@ const DEFAULT_PLANTS = [
 
 const WORLD_WIDTH = 1000;
 const WORLD_HEIGHT = 600;
-const FURNITURE_KINDS = new Set(["desk", "table", "sofa"]);
+// The kind decides how the client draws the piece, so the set is explicit.
+const FURNITURE_KINDS = new Set([
+  "desk",
+  "meeting-table",
+  "discussion-table",
+  "game-table",
+  "sofa",
+]);
 
 function buildDefaultLayout(roomId) {
   return {
