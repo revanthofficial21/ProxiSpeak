@@ -863,3 +863,208 @@ button:disabled {
   font-size: 12px;
   color: #64748b;
 }
+
+/* App shell — sidebar + main, matching the product mockup's arrangement */
+.app {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 18px 14px;
+  border-right: 1px solid #1e293b;
+  background: #0b1220;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
+.sidebar .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sidebar .brand h1 {
+  margin: 0;
+  font-size: 16px;
+  color: #e2e8f0;
+}
+
+.sidebar .brand p {
+  margin: 2px 0 0;
+  font-size: 10px;
+  color: #64748b;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nav-item {
+  text-align: left;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.nav-item:hover {
+  background: #111c2e;
+  color: #e2e8f0;
+}
+
+.nav-item.is-active {
+  background: #1d4ed8;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.sidebar-profile {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid #1e293b;
+}
+
+.sidebar-profile-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sidebar-profile-text strong {
+  font-size: 13px;
+  color: #e2e8f0;
+}
+
+.presence {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.presence.online {
+  color: #34d399;
+}
+
+.presence.online .status-dot {
+  background: #34d399;
+}
+
+.app-main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 20px 28px;
+  min-width: 0;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  background: #0f172a;
+}
+
+.topbar-room {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-room strong {
+  font-size: 14px;
+  color: #e2e8f0;
+}
+
+.topbar-sub {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.online-count {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.leave-button {
+  padding: 7px 14px;
+  border: 1px solid #f87171;
+  border-radius: 8px;
+  background: transparent;
+  color: #f87171;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.leave-button:hover {
+  background: #f87171;
+  color: #0b1220;
+}
+
+/* One view at a time: the sidebar picks which panels are visible */
+.app[data-view="office"] [data-panel]:not([data-panel="office"]),
+.app[data-view="people"] [data-panel]:not([data-panel="people"]),
+.app[data-view="rooms"] [data-panel]:not([data-panel="rooms"]),
+.app[data-view="chat"] [data-panel]:not([data-panel="chat"]),
+.app[data-view="settings"] [data-panel]:not([data-panel="settings"]) {
+  display: none;
+}
+
+@media (max-width: 820px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    position: static;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    border-right: 0;
+    border-bottom: 1px solid #1e293b;
+  }
+
+  .sidebar-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .sidebar-profile {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+  }
+}

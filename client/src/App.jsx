@@ -219,6 +219,7 @@ export default function App() {
   const nearbyRef = useRef(new Set());
 
   const [showLanding, setShowLanding] = useState(true);
+  const [activeView, setActiveView] = useState("office");
   const [connected, setConnected] = useState(false);
   const [socket, setSocket] = useState(null);
   const [players, setPlayers] = useState([]);
@@ -739,27 +740,86 @@ export default function App() {
     };
   }, []);
 
+  const activeRoom = rooms.find((room) => room.id === activeRoomId);
+
   if (showLanding) {
     return <Landing onEnter={() => setShowLanding(false)} />;
   }
 
   return (
-    <main className="app">
-      <header className="topbar">
+    <main className="app" data-view={activeView}>
+      <aside className="sidebar">
         <div className="brand">
           <div className="brand-icon">P</div>
           <div>
             <h1>ProxiSpeak</h1>
-            <p>Spatial collaboration, reimagined</p>
+            <p>Spatial collaboration</p>
           </div>
         </div>
-        <div className={`connection ${connected ? "online" : "offline"}`}>
-          <span className="status-dot" />
-          {connected ? "Server connected" : "Connecting to server…"}
+
+        <nav className="sidebar-nav" aria-label="Sections">
+          {[
+            ["office", "Office"],
+            ["people", "People"],
+            ["rooms", "Rooms"],
+            ["chat", "Chat"],
+            ["settings", "Settings"],
+          ].map(([view, label]) => (
+            <button
+              key={view}
+              type="button"
+              className={
+                activeView === view ? "nav-item is-active" : "nav-item"
+              }
+              aria-current={activeView === view ? "page" : undefined}
+              onClick={() => setActiveView(view)}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+
+        <div className="sidebar-profile">
+          <span
+            className="profile-avatar"
+            style={{ backgroundColor: avatarColor }}
+            aria-hidden="true"
+          >
+            {(savedName || playerName || "?").trim().charAt(0).toUpperCase() ||
+              "?"}
+          </span>
+          <div className="sidebar-profile-text">
+            <strong>{savedName || "Set a name"}</strong>
+            <span className={`presence ${connected ? "online" : "offline"}`}>
+              <span className="status-dot" />
+              {connected ? "Online" : "Connecting…"}
+            </span>
+          </div>
+        </div>
+      </aside>
+
+      <div className="app-main">
+      <header className="topbar">
+        <div className="topbar-room">
+          <span className="live-dot" />
+          <strong>{activeRoom?.name || "Open World"}</strong>
+          <span className="topbar-sub">Spatial audio office</span>
+        </div>
+        <div className="topbar-actions">
+          <span className="online-count">
+            {players.length} online
+          </span>
+          <button
+            type="button"
+            className="leave-button"
+            onClick={() => setShowLanding(true)}
+          >
+            Leave Office
+          </button>
         </div>
       </header>
 
-      <section className="intro">
+      <section className="intro" data-panel="office">
         <div>
           <p className="eyebrow">YOUR SHARED SPACE</p>
           <h2>Meet in the same world.</h2>
@@ -775,7 +835,7 @@ export default function App() {
         </div>
       </section>
 
-      <section className="name-panel">
+      <section className="name-panel" data-panel="settings">
         <div className="profile-preview">
           <span
             className="profile-avatar"
@@ -842,7 +902,7 @@ export default function App() {
         {statusError && <p className="form-error">{statusError}</p>}
       </section>
 
-      <section className="world-card">
+      <section className="world-card" data-panel="office">
         <div className="world-toolbar">
           <div>
             <span className="live-dot" />
@@ -877,7 +937,7 @@ export default function App() {
         </div>
       </section>
 
-      <section className="nearby-panel">
+      <section className="nearby-panel" data-panel="office">
         <strong>Nearby players (within 100px): {nearbyPlayers.length}</strong>
         {nearbyPlayers.length === 0 ? (
           <p>No one nearby yet — move closer to another avatar.</p>
@@ -893,7 +953,7 @@ export default function App() {
         )}
       </section>
 
-      <section className="audio-panel">
+      <section className="audio-panel" data-panel="office">
         <strong>Proximity Voice Chat</strong>
         <p>{voiceStatus}</p>
         <button
@@ -963,7 +1023,7 @@ export default function App() {
         )}
       </section>
 
-      <section className="people-panel">
+      <section className="people-panel" data-panel="people">
         <h2>People online</h2>
         {players.length === 0 ? (
           <p className="panel-empty">No one here yet.</p>
@@ -995,7 +1055,7 @@ export default function App() {
         )}
       </section>
 
-      <section className="rooms-panel">
+      <section className="rooms-panel" data-panel="rooms">
         <h2>Spaces</h2>
         {roomsError ? (
           <p className="panel-error">{roomsError}</p>
@@ -1040,7 +1100,7 @@ export default function App() {
       </section>
 
       {activeRoomId === "Meeting Room" && (
-        <section className="screen-share-panel">
+        <section className="screen-share-panel" data-panel="rooms">
           <div className="screen-share-header">
             <div>
               <strong>Meeting Room screens</strong>
@@ -1083,7 +1143,7 @@ export default function App() {
         </section>
       )}
 
-      <section className="chat-panel">
+      <section className="chat-panel" data-panel="chat">
         <h2>World chat</h2>
         <ul className="chat-log">
           {messages.length === 0 ? (
@@ -1121,6 +1181,7 @@ export default function App() {
         </form>
         {chatError && <p className="panel-error">{chatError}</p>}
       </section>
+      </div>
     </main>
   );
 }
