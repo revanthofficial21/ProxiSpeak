@@ -151,9 +151,10 @@ the last saved display name locally so a reconnect can request that restoration.
 Avatar preferences are allow-listed by the server, and profile writes are
 bound to the active socket; reconnect restoration only claims a unique,
 inactive record.
-The active room is maintained by the server for each live socket session and
-is not persisted in MongoDB. Presence is visible across rooms; movement,
-proximity audio, and chat remain isolated to players in the same room.
+The active room is authoritative in the server's live session; MongoDB records
+the last room alongside a movement save, but that value is not restored on
+reconnect. Presence is visible across rooms; movement, proximity audio, and
+chat remain isolated to players in the same room.
 
 ## 8. Realtime Events
 

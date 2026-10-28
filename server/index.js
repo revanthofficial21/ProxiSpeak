@@ -285,6 +285,15 @@ async function leaveMeetingCall(socket) {
   await socket.leave(`meeting-call:${MEETING_ROOM}`);
 }
 
+// Emit to everyone in a room, guarding the channel: roomChannel() returns null
+// for an unknown space, and io.to(null) silently drops the message.
+function emitToRoom(roomName, event, payload) {
+  const channel = roomChannel(roomName);
+  if (!channel) return false;
+  io.to(channel).emit(event, payload);
+  return true;
+}
+
 io.on("connection", async (socket) => {
   console.log(`Player connected: ${socket.id}`);
 
@@ -470,11 +479,10 @@ io.on("connection", async (socket) => {
       }
       return;
     }
-    const message = createChatMessage(
-      players.get(socket.id),
-      text,
-      chatMessageId + 1
-    );
+    // Look the sender up ONCE — calling players.get() three times risks a
+    // mid-handler disconnect turning .room into a TypeError.
+    const sender = players.get(socket.id);
+    const message = createChatMessage(sender, text, chatMessageId + 1);
     if (!message) {
       if (typeof callback === "function") {
         callback({
@@ -485,10 +493,18 @@ io.on("connection", async (socket) => {
       return;
     }
 
+    const channel = roomChannel(sender.room);
+    if (!channel) {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "You are not in a valid space" });
+      }
+      return;
+    }
+
     chatMessageId = message.id;
-    io.to(roomChannel(players.get(socket.id).room)).emit("chat:message", {
+    io.to(channel).emit("chat:message", {
       ...message,
-      room: players.get(socket.id).room,
+      room: sender.room,
     });
     const unreadNotification = createChatUnreadNotification(
       players.get(socket.id).room
@@ -707,16 +723,10 @@ io.on("connection", async (socket) => {
 
       currentPlayer.name = normalizedName;
       players.set(socket.id, currentPlayer);
-      io.to(roomChannel(currentPlayer.room)).emit(
-        "player:renamed",
-        publicPlayer(currentPlayer)
-      );
+      emitToRoom(currentPlayer.room, "player:renamed", publicPlayer(currentPlayer));
       emitPresenceState();
       if (returningPlayer) {
-        io.to(roomChannel(currentPlayer.room)).emit(
-          "player:moved",
-          publicPlayer(currentPlayer)
-        );
+        emitToRoom(currentPlayer.room, "player:moved", publicPlayer(currentPlayer));
         updatePlayerProximity(socket, currentPlayer).catch((error) => {
           console.error(
             "Failed to update proximity after player restore:",
@@ -796,7 +806,8 @@ io.on("connection", async (socket) => {
 
       currentPlayer.avatarPrefs = normalizedPrefs;
       players.set(socket.id, currentPlayer);
-      io.to(roomChannel(currentPlayer.room)).emit(
+      emitToRoom(
+        currentPlayer.room,
         "player:avatarPrefs",
         publicPlayer(currentPlayer)
       );
@@ -864,10 +875,7 @@ io.on("connection", async (socket) => {
         return;
       }
 
-      io.to(roomChannel(updatedPlayer.room)).emit(
-        "player:moved",
-        publicPlayer(updatedPlayer)
-      );
+      emitToRoom(updatedPlayer.room, "player:moved", publicPlayer(updatedPlayer));
 
       await updatePlayerProximity(socket, updatedPlayer);
     } catch (error) {

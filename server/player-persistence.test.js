@@ -239,6 +239,7 @@ async function runTests() {
     socketId: "position-session",
     connected: true,
     name: "Position Player",
+    room: "Lounge",
     x: 100,
     y: 120,
     location: [100, 120],
@@ -248,7 +249,7 @@ async function runTests() {
   const positionSave = await savePlayerPosition(
     positionCollection,
     "position-session",
-    { name: "Position Player", x: 200, y: 240 }
+    { name: "Position Player", room: "Focus Space", x: 200, y: 240 }
   );
   const positionUpdate = positionCollection.updates[0];
   const inactivePositionCollection = createSessionStatusCollection([
@@ -266,10 +267,12 @@ async function runTests() {
       positionRecord.y === 240 &&
       positionRecord.location[0] === 200 &&
       positionRecord.location[1] === 240 &&
+      positionRecord.room === "Focus Space" &&
       positionUpdate.filter.socketId === "position-session" &&
       positionUpdate.filter.connected === true &&
       inactivePositionSave.matchedCount === 0 &&
       inactivePositionRecord.x === 100 &&
+      inactivePositionRecord.room === "Lounge" &&
       inactivePositionRecord.connected === false
   );
 

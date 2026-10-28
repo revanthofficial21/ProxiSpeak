@@ -51,6 +51,7 @@ function savePlayerPosition(collection, socketId, player) {
     {
       $set: {
         name: player.name,
+        room: player.room,
         ...positionFields(player.x, player.y),
         connected: true,
         updatedAt: new Date(),
