@@ -26,6 +26,7 @@ const {
 const { createChatMessage } = require("./lib/chat");
 const { createRateLimiter } = require("./lib/rate-limit");
 const { registerScreenShareHandlers } = require("./lib/screen-share");
+const { initializeLayouts, getLayout } = require("./lib/layouts");
 const { attachMesh, detachMesh } = require("./lib/mesh");
 const {
   allocateSpawnPosition: pickSpawnPosition,
@@ -62,6 +63,18 @@ app.use(express.json());
 // room, so everyone still shares one world.
 app.get("/api/rooms", (req, res) => {
   res.json({ rooms: availableRooms });
+});
+
+// The furniture and zones for one room, so the client does not have to hard-code
+// them. Falls back to the built-in layout if the document is missing or broken.
+app.get("/api/rooms/:id/layout", async (req, res) => {
+  try {
+    const layout = await getLayout(db, req.params.id);
+    res.json({ layout });
+  } catch (error) {
+    console.error("Could not load the room layout:", error.message);
+    res.status(500).json({ error: "Could not load the room layout." });
+  }
 });
 
 const io = new Server(httpServer, {
@@ -790,6 +803,12 @@ async function startServer() {
 
     availableRooms = await initializeRoomCatalog(db);
     console.log("Room catalog loaded:", availableRooms.length);
+
+    await initializeLayouts(
+      db,
+      availableRooms.map((room) => room.id)
+    );
+    console.log("Room layouts seeded.");
 
     console.log("MongoDB connected successfully!");
 
