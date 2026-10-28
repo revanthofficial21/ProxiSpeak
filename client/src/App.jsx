@@ -562,7 +562,10 @@ export default function App() {
       canvasWrap.removeEventListener("focus", handleFocus);
       canvasWrap.removeEventListener("blur", handleBlur);
     };
-  }, []);
+    // The canvas does not exist while the landing page is up, so this effect has to
+    // re-run when the landing closes — otherwise the world never draws and the
+    // keyboard handlers are never attached.
+  }, [showLanding]);
 
   const handleSetName = (event) => {
     event.preventDefault();
