@@ -112,6 +112,15 @@ function normalizeLayout(document, roomId) {
   };
 }
 
+// A layout seeded by an older build may use furniture kinds this build no longer
+// draws. Detecting that here means an upgrade repairs the data instead of leaving
+// a document the client would silently discard.
+function isLayoutStale(layout) {
+  const furniture = layout?.furniture;
+  if (!Array.isArray(furniture) || furniture.length === 0) return true;
+  return furniture.some((piece) => !FURNITURE_KINDS.has(piece?.kind));
+}
+
 async function initializeLayouts(db, roomIds) {
   const collection = db.collection("rooms");
 
@@ -124,6 +133,24 @@ async function initializeLayouts(db, roomIds) {
       },
     }))
   );
+
+  const rooms = await collection
+    .find({ _id: { $in: roomIds } }, { projection: { layout: 1 } })
+    .toArray();
+
+  const stale = rooms.filter((room) => isLayoutStale(room.layout));
+
+  if (stale.length > 0) {
+    await collection.bulkWrite(
+      stale.map((room) => ({
+        updateOne: {
+          filter: { _id: room._id },
+          update: { $set: { layout: buildDefaultLayout(room._id) } },
+        },
+      }))
+    );
+    console.log(`Re-seeded ${stale.length} outdated room layout(s).`);
+  }
 }
 
 async function getLayout(db, roomId) {
@@ -137,6 +164,7 @@ module.exports = {
   FURNITURE_KINDS,
   buildDefaultLayout,
   normalizeLayout,
+  isLayoutStale,
   initializeLayouts,
   getLayout,
 };

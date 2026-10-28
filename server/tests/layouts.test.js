@@ -2,6 +2,7 @@
 const {
   buildDefaultLayout,
   normalizeLayout,
+  isLayoutStale,
   FURNITURE_KINDS,
 } = require("../lib/layouts");
 
@@ -99,6 +100,37 @@ check(
     },
     "lounge"
   ).furniture.length === 1
+);
+
+// --- upgrade repair ----------------------------------------------------
+
+check(
+  "a freshly built layout is not stale",
+  isLayoutStale(buildDefaultLayout("open-world")) === false
+);
+
+check(
+  "a layout using a retired kind is stale",
+  isLayoutStale({
+    furniture: [{ kind: "table", x: 1, y: 1, width: 10, height: 10 }],
+  }) === true
+);
+
+check(
+  "a layout with no furniture is stale",
+  isLayoutStale({ furniture: [] }) === true &&
+    isLayoutStale(null) === true
+);
+
+check(
+  "a layout with every current kind is fine",
+  isLayoutStale({
+    furniture: [
+      { kind: "desk", x: 1, y: 1, width: 10, height: 10 },
+      { kind: "meeting-table", x: 1, y: 1, width: 10, height: 10 },
+      { kind: "sofa", x: 1, y: 1, width: 10, height: 10 },
+    ],
+  }) === false
 );
 
 console.log(
