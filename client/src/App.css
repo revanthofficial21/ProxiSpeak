@@ -1068,3 +1068,34 @@ button:disabled {
     border-top: 0;
   }
 }
+
+/* Device pickers */
+.device-pickers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.device-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.device-picker select {
+  padding: 7px 9px;
+  border: 1px solid #263449;
+  border-radius: 8px;
+  background: #0b1220;
+  color: #e2e8f0;
+  font-size: 12px;
+}
+
+.device-hint {
+  margin: 0;
+  font-size: 11px;
+  color: #64748b;
+}

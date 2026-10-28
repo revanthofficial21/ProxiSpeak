@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import useVoiceChat from "./useVoiceChat";
 import useScreenShare from "./useScreenShare";
+import useAudioDevices from "./useAudioDevices";
 import Landing from "./Landing";
 import {
   ZONES,
@@ -220,6 +221,8 @@ export default function App() {
 
   const [showLanding, setShowLanding] = useState(true);
   const [activeView, setActiveView] = useState("office");
+  const [micDeviceId, setMicDeviceId] = useState("");
+  const [speakerDeviceId, setSpeakerDeviceId] = useState("");
   const [connected, setConnected] = useState(false);
   const [socket, setSocket] = useState(null);
   const [players, setPlayers] = useState([]);
@@ -252,8 +255,11 @@ export default function App() {
     disableVoice,
     toggleMute,
     changeSpeakerVolume,
+    changeOutputDevice,
     resumeAudio,
-  } = useVoiceChat(socket, nearbyPlayers, playersRef);
+  } = useVoiceChat(socket, nearbyPlayers, playersRef, { micDeviceId });
+
+  const { microphones, speakers } = useAudioDevices(voiceEnabled);
 
   const {
     isSharing,
@@ -998,6 +1004,50 @@ export default function App() {
                 style={{ width: `${Math.round(micLevel * 100)}%` }}
               />
             </span>
+          </div>
+        )}
+        {(microphones.length > 0 || speakers.length > 0) && (
+          <div className="device-pickers">
+            {microphones.length > 0 && (
+              <label className="device-picker">
+                Microphone
+                <select
+                  value={micDeviceId}
+                  onChange={(event) => setMicDeviceId(event.target.value)}
+                >
+                  <option value="">Default microphone</option>
+                  {microphones.map((device, index) => (
+                    <option key={device.deviceId || index} value={device.deviceId}>
+                      {device.label || `Microphone ${index + 1}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {speakers.length > 0 && (
+              <label className="device-picker">
+                Speaker
+                <select
+                  value={speakerDeviceId}
+                  onChange={(event) => {
+                    setSpeakerDeviceId(event.target.value);
+                    changeOutputDevice(event.target.value);
+                  }}
+                >
+                  <option value="">Default speaker</option>
+                  {speakers.map((device, index) => (
+                    <option key={device.deviceId || index} value={device.deviceId}>
+                      {device.label || `Speaker ${index + 1}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {voiceEnabled && (
+              <p className="device-hint">
+                Microphone changes apply when you re-enable the mic.
+              </p>
+            )}
           </div>
         )}
         {Object.keys(peerStates).length > 0 && (

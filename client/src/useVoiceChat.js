@@ -45,7 +45,12 @@ function readLevel(analyser, buffer) {
   return Math.min(1, Math.sqrt(sum / buffer.length) * 4);
 }
 
-export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
+export default function useVoiceChat(
+  socket,
+  nearbyPlayers,
+  positionsRef,
+  { micDeviceId = "" } = {}
+) {
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("Voice chat disabled");
   const [peerStates, setPeerStates] = useState({});
@@ -267,7 +272,11 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
+        // An exact device is requested when one is picked; otherwise the browser
+        // default, which is also what a first-time user gets.
+        audio: micDeviceId
+          ? { deviceId: { exact: micDeviceId } }
+          : true,
         video: false,
       });
 
@@ -613,6 +622,19 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
     }
   }, []);
 
+  // Send the mix to a chosen speaker. setSinkId is newer than the rest of this
+  // hook, so it is feature-detected rather than assumed.
+  const changeOutputDevice = useCallback(async (deviceId) => {
+    const ctx = audioContextRef.current;
+    if (!ctx || typeof ctx.setSinkId !== "function") return;
+
+    try {
+      await ctx.setSinkId(deviceId || "");
+    } catch (error) {
+      console.error("Could not switch audio output:", error);
+    }
+  }, []);
+
   return {
     voiceEnabled,
     voiceStatus,
@@ -626,6 +648,7 @@ export default function useVoiceChat(socket, nearbyPlayers, positionsRef) {
     disableVoice,
     toggleMute,
     changeSpeakerVolume,
+    changeOutputDevice,
     resumeAudio,
   };
 }
