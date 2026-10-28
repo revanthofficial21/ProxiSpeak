@@ -1,5 +1,5 @@
 const { randomUUID } = require("node:crypto");
-const { emitToRoom } = require("./roomUtils");
+const { emitToRoom, getRoomChannel } = require("./roomUtils");
 
 const MAX_CHAT_MESSAGE_LENGTH = 500;
 const CHAT_HISTORY_LIMIT = 100;
@@ -115,6 +115,11 @@ function registerChatHandlers(socket, { db, players, io, onMessageSending }) {
       await db.collection("chatMessages").insertOne(messageDocument);
       const message = toPublicChatMessage(messageDocument);
       emitToRoom(io, sender.roomId, "chat:message", message);
+      io.except(getRoomChannel(sender.roomId)).emit("chat:message", {
+        id: message.id,
+        senderId: message.senderId,
+        roomId: message.roomId,
+      });
       respond({ success: true, id: message.id });
     } catch (error) {
       if (error.code === 11000) {

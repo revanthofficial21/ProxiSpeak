@@ -37,6 +37,13 @@ function createIo() {
         },
       };
     },
+    except(destination) {
+      return {
+        emit(event, payload) {
+          events.push({ excludedDestination: destination, event, payload });
+        },
+      };
+    },
   };
 }
 
@@ -165,13 +172,20 @@ async function run() {
   assert.deepEqual(io.events[0].destination, "room:lounge");
   assert.equal(io.events[0].payload.name, "Trusted server name");
   assert.equal(io.events[0].payload.roomId, "lounge");
+  assert.equal(io.events[1].excludedDestination, "room:lounge");
+  assert.equal(io.events[1].event, "chat:message");
+  assert.deepEqual(io.events[1].payload, {
+    id: sent.id,
+    senderId: sender.id,
+    roomId: "lounge",
+  });
 
   const duplicate = await send(socket, "hello room");
   assert.equal(duplicate.success, true);
   assert.equal(duplicate.duplicate, true);
   assert.equal(duplicate.id, sent.id);
   assert.equal(db.messages.length, 1, "retries do not insert a second message");
-  assert.equal(io.events.length, 1, "duplicate messages are not rebroadcast");
+  assert.equal(io.events.length, 2, "duplicate messages are not rebroadcast");
 
   const historyMessages = [];
   for (let index = 0; index < CHAT_HISTORY_LIMIT + 10; index += 1) {
@@ -217,7 +231,7 @@ async function run() {
   db.failInsert = true;
   const failedSend = await send(socket, "not persisted", "request-failure");
   assert.equal(failedSend.success, false);
-  assert.equal(io.events.length, 1, "database failures are not broadcast");
+  assert.equal(io.events.length, 2, "database failures are not broadcast");
 
   historyDb.failHistory = true;
   const failingHistorySocket = createSocket(sender.id);

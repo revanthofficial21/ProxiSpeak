@@ -600,6 +600,9 @@ input {
 }
 
 .room-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   padding: 7px 11px;
   border: 1px solid #35445a;
   border-radius: 20px;
@@ -607,6 +610,20 @@ input {
   color: #e5edf8;
   font-size: 12px;
   cursor: pointer;
+}
+
+.room-unread-badge {
+  display: inline-grid;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  place-items: center;
+  border-radius: 9px;
+  background: #f97316;
+  color: #fff7ed;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .room-button:hover {

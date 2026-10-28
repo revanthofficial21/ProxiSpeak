@@ -4,6 +4,7 @@ const {
   DEFAULT_ROOM_ID,
   getRoomChannel,
   getPlayersInRoom,
+  emitConnectedPlayerCount,
   areInSameRoom,
   emitToRoom,
   emitRoomPresence,
@@ -55,6 +56,9 @@ function createIo() {
   const events = [];
   return {
     events,
+    emit(event, payload) {
+      events.push({ destination: "all", event, payload });
+    },
     to(destination) {
       return {
         emit(event, payload) {
@@ -98,11 +102,32 @@ async function run() {
     y: 100,
     roomId: "lounge",
   };
+  const twoConnectedPlayers = new Map(
+    [player, otherRoomPeer].map((entry) => [entry.id, entry])
+  );
+  const countIo = createIo();
+  emitConnectedPlayerCount(countIo, twoConnectedPlayers);
+  assert.equal(countIo.events.at(-1).payload, 2);
+  assert.equal(getPlayersInRoom(twoConnectedPlayers, DEFAULT_ROOM_ID).length, 1);
+  assert.equal(getPlayersInRoom(twoConnectedPlayers, "lounge").length, 1);
+  twoConnectedPlayers.set(player.id, { ...player, roomId: "meeting-room" });
+  emitConnectedPlayerCount(countIo, twoConnectedPlayers);
+  assert.equal(countIo.events.at(-1).payload, 2, "room switching preserves the global count");
+  twoConnectedPlayers.delete(otherRoomPeer.id);
+  emitConnectedPlayerCount(countIo, twoConnectedPlayers);
+  assert.equal(countIo.events.at(-1).payload, 1, "disconnecting one player lowers the global count");
+
   const players = new Map(
     [player, sameRoomPeer, otherRoomPeer].map((entry) => [entry.id, entry])
   );
-  const socket = createSocket(player.id, DEFAULT_ROOM_ID);
   const io = createIo();
+  emitConnectedPlayerCount(io, players);
+  assert.deepEqual(io.events.at(-1), {
+    destination: "all",
+    event: "players:count",
+    payload: 3,
+  });
+  const socket = createSocket(player.id, DEFAULT_ROOM_ID);
   const updates = [];
   const roomChanges = [];
   const historyLoads = [];
@@ -149,6 +174,17 @@ async function run() {
   const switched = await requestRoom(socket, "lounge");
   assert.deepEqual(switched, { success: true, roomId: "lounge" });
   assert.equal(players.get(player.id).roomId, "lounge");
+  assert.equal(players.size, 3, "switching rooms keeps the global player count");
+  assert.equal(
+    getPlayersInRoom(players, DEFAULT_ROOM_ID).length,
+    1,
+    "the source room roster remains room-scoped"
+  );
+  assert.equal(
+    getPlayersInRoom(players, "lounge").length,
+    2,
+    "the destination room roster remains room-scoped"
+  );
   assert.equal(socket.memberships.has(getRoomChannel(DEFAULT_ROOM_ID)), false);
   assert.equal(socket.memberships.has(getRoomChannel("lounge")), true);
   assert.deepEqual(updates[0].filter, {
@@ -253,8 +289,22 @@ async function run() {
     ),
     "switching rooms notifies the destination room"
   );
+  assert.equal(
+    io.events.filter(({ event }) => event === "players:count").length,
+    1,
+    "room switching does not report a global count change"
+  );
   assert.equal(areInSameRoom(players, player.id, sameRoomPeer.id), false);
   assert.equal(areInSameRoom(players, player.id, otherRoomPeer.id), false);
+
+  players.delete(otherRoomPeer.id);
+  emitConnectedPlayerCount(io, players);
+  assert.equal(players.size, 2);
+  assert.deepEqual(io.events.at(-1), {
+    destination: "all",
+    event: "players:count",
+    payload: 2,
+  });
 
   const roomPlayers = getPlayersInRoom(players, DEFAULT_ROOM_ID);
   const nearby = getNearbyPlayers(roomPlayers, {

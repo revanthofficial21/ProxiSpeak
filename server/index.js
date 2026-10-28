@@ -12,6 +12,7 @@ const {
   DEFAULT_ROOM_ID,
   getRoomChannel,
   getPlayersInRoom,
+  emitConnectedPlayerCount,
   areInSameRoom,
   emitToRoom,
   emitRoomPresence,
@@ -227,6 +228,7 @@ io.on("connection", (socket) => {
     ...spawnPosition,
   };
   players.set(socket.id, player);
+  emitConnectedPlayerCount(io, players);
   proximityState.set(socket.id, new Set());
   socket.join(getRoomChannel(player.roomId));
 
@@ -554,6 +556,7 @@ io.on("connection", (socket) => {
     }
 
     players.delete(socket.id);
+    emitConnectedPlayerCount(io, players);
     proximityState.delete(socket.id);
     spawnSlots.delete(socket.id);
 

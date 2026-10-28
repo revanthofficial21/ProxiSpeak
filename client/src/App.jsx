@@ -3,6 +3,11 @@ import { io } from "socket.io-client";
 import useVoiceChat from "./useVoiceChat";
 import useScreenShare from "./useScreenShare";
 import {
+  clearUnreadCount,
+  incrementUnreadCount,
+  recordUnreadMessage,
+} from "./unreadMessages";
+import {
   formatTypingIndicator,
   updateTypingUsers,
 } from "./typingIndicators";
@@ -109,6 +114,7 @@ export default function App() {
   const canvasRef = useRef(null);
   const canvasWrapRef = useRef(null);
   const socketRef = useRef(null);
+  const activeRoomIdRef = useRef("");
   const chatLogRef = useRef(null);
   const keysRef = useRef({});
   const gameFocusedRef = useRef(false);
@@ -121,6 +127,7 @@ export default function App() {
 
   const [connected, setConnected] = useState(false);
   const [socket, setSocket] = useState(null);
+  const [connectedPlayerCount, setConnectedPlayerCount] = useState(0);
   const [players, setPlayers] = useState([]);
   const [nearbyPlayers, setNearbyPlayers] = useState([]);
   const [chatMessages, setChatMessages] = useState([]);
@@ -131,6 +138,7 @@ export default function App() {
   const [chatError, setChatError] = useState("");
   const [rooms, setRooms] = useState([]);
   const [activeRoomId, setActiveRoomId] = useState("");
+  const [unreadCounts, setUnreadCounts] = useState({});
   const [roomsLoading, setRoomsLoading] = useState(true);
   const [roomsError, setRoomsError] = useState("");
   const [roomActionError, setRoomActionError] = useState("");
@@ -189,6 +197,7 @@ export default function App() {
     socketRef.current = client;
     setSocket(client);
     const presenceTimers = presenceTimersRef.current;
+    const seenChatMessageIds = new Set();
 
     client.on("connect", () => {
       setConnected(true);
@@ -198,6 +207,7 @@ export default function App() {
     });
     client.on("disconnect", () => {
       setConnected(false);
+      setConnectedPlayerCount(0);
       setTypingUsers({});
       playersRef.current.clear();
       nearbyRef.current.clear();
@@ -209,6 +219,11 @@ export default function App() {
       }
       presenceTimers.clear();
       setPresenceNotifications([]);
+    });
+    client.on("players:count", (count) => {
+      if (Number.isInteger(count) && count >= 0) {
+        setConnectedPlayerCount(count);
+      }
     });
     client.on("world:state", (list) => {
       if (!Array.isArray(list)) return;
@@ -226,7 +241,11 @@ export default function App() {
           savedDisplayNameRef.current = ownPlayer.name;
         }
         if (typeof ownPlayer.roomId === "string") {
+          activeRoomIdRef.current = ownPlayer.roomId;
           setActiveRoomId(ownPlayer.roomId);
+          setUnreadCounts((current) =>
+            clearUnreadCount(current, ownPlayer.roomId)
+          );
         }
       }
       setChatMessages([]);
@@ -332,25 +351,34 @@ export default function App() {
       }, 5000);
       presenceTimersRef.current.set(notification.eventId, timer);
     });
-    client.on("chat:message", (message) => {
+    const handleChatMessage = (message) => {
+      const isUnread = recordUnreadMessage(
+        message,
+        activeRoomIdRef.current,
+        client.id,
+        seenChatMessageIds
+      );
+      if (isUnread) {
+        setUnreadCounts((current) =>
+          incrementUnreadCount(current, message.roomId)
+        );
+      }
+
       if (
         !message ||
-        typeof message.id !== "string" ||
-        typeof message.senderId !== "string" ||
-        typeof message.roomId !== "string" ||
         typeof message.text !== "string" ||
-        typeof message.timestamp !== "string"
+        typeof message.timestamp !== "string" ||
+        message.roomId !== activeRoomIdRef.current
       ) {
         return;
       }
-      const currentRoomId = playersRef.current.get(client.id)?.roomId;
-      if (message.roomId !== currentRoomId) return;
       setChatMessages((current) =>
         current.some((existing) => existing.id === message.id)
           ? current
           : [...current, message]
       );
-    });
+    };
+    client.on("chat:message", handleChatMessage);
     client.on("chat:history", (history) => {
       if (!history || typeof history !== "object") return;
       const { roomId, messages } = history;
@@ -410,6 +438,7 @@ export default function App() {
     client.on("chat:typing", handleChatTyping);
 
     return () => {
+      client.off("chat:message", handleChatMessage);
       client.off("chat:typing", handleChatTyping);
       client.disconnect();
       for (const timer of presenceTimers.values()) {
@@ -450,13 +479,17 @@ export default function App() {
             typeof room.name === "string"
         );
         setRooms(availableRooms);
-        setActiveRoomId((currentRoomId) =>
-          availableRooms.some((room) => room.id === currentRoomId)
+        setActiveRoomId((currentRoomId) => {
+          const nextRoomId = availableRooms.some(
+            (room) => room.id === currentRoomId
+          )
             ? currentRoomId
             : availableRooms.find((room) => room.id === "open-world")?.id ||
               availableRooms[0]?.id ||
-              ""
-        );
+              "";
+          activeRoomIdRef.current = nextRoomId;
+          return nextRoomId;
+        });
         setRoomsError("");
       } catch (error) {
         if (error.name === "AbortError") return;
@@ -490,7 +523,11 @@ export default function App() {
         );
         return;
       }
+      activeRoomIdRef.current = result.roomId;
       setActiveRoomId(result.roomId);
+      setUnreadCounts((current) =>
+        clearUnreadCount(current, result.roomId)
+      );
       setChatError("");
       pendingChatRef.current = null;
     });
@@ -797,9 +834,9 @@ export default function App() {
           </p>
         </div>
         <div className="player-count">
-          <span className="count-number">{players.length}</span>
+          <span className="count-number">{connectedPlayerCount}</span>
           <span className="count-label">
-            Connected player{players.length === 1 ? "" : "s"}
+            Connected player{connectedPlayerCount === 1 ? "" : "s"}
           </span>
         </div>
       </section>
@@ -870,19 +907,32 @@ export default function App() {
           <p className="rooms-message">No rooms are available.</p>
         ) : (
           <ul className="rooms-list">
-            {rooms.map((room) => (
-              <li key={room.id}>
-                <button
-                  type="button"
-                  className={`room-button${room.id === activeRoomId ? " selected" : ""}`}
-                  aria-pressed={room.id === activeRoomId}
-                  disabled={!connected || switchingRoom}
-                  onClick={() => selectRoom(room.id)}
-                >
-                  {room.name}
-                </button>
-              </li>
-            ))}
+            {rooms.map((room) => {
+              const unreadCount = unreadCounts[room.id] || 0;
+              return (
+                <li key={room.id}>
+                  <button
+                    type="button"
+                    className={`room-button${room.id === activeRoomId ? " selected" : ""}`}
+                    aria-pressed={room.id === activeRoomId}
+                    aria-label={
+                      unreadCount > 0
+                        ? `${room.name}, ${unreadCount} unread messages`
+                        : undefined
+                    }
+                    disabled={!connected || switchingRoom}
+                    onClick={() => selectRoom(room.id)}
+                  >
+                    {room.name}
+                    {unreadCount > 0 && (
+                      <span className="room-unread-badge" aria-hidden="true">
+                        {unreadCount > 99 ? "99+" : unreadCount}
+                      </span>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         )}
         {activeRoom && (

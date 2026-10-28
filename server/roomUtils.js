@@ -20,6 +20,10 @@ function getPlayersInRoom(players, roomId) {
   );
 }
 
+function emitConnectedPlayerCount(io, players) {
+  io.emit("players:count", players.size);
+}
+
 function areInSameRoom(players, firstId, secondId) {
   const firstPlayer = players.get(firstId);
   const secondPlayer = players.get(secondId);
@@ -63,6 +67,7 @@ module.exports = {
   getRoomChannel,
   isRoomAvailable,
   getPlayersInRoom,
+  emitConnectedPlayerCount,
   areInSameRoom,
   emitToRoom,
   emitRoomPresence,
