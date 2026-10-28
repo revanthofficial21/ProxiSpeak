@@ -198,6 +198,13 @@ microphone** in each, and move the avatars within 100px to connect.
 | `client` | `npm run dev` | Start the Vite dev server |
 | `client` | `npm run build` | Production build |
 
+## Testing
+
+Three layers — parse/build, unit suites, and client smoke tests that render the
+real app. `npm test` from the repo root runs the suites. See
+[docs/TESTING.md](docs/TESTING.md) for how to verify a feature and what each layer
+catches.
+
 ## Scaling across instances
 
 The server runs as a single instance by default. Set `REDIS_URL` and it attaches
