@@ -26,12 +26,14 @@ const {
 const { createChatMessage } = require("./lib/chat");
 const { createRateLimiter } = require("./lib/rate-limit");
 const { registerScreenShareHandlers } = require("./lib/screen-share");
+const { attachMesh, detachMesh } = require("./lib/mesh");
 const {
   allocateSpawnPosition: pickSpawnPosition,
   clampPosition,
   normalizeDisplayName,
   diffProximity,
   isWithinProximity,
+  nearestPeers,
 } = require("./lib/session");
 
 const app = express();
@@ -42,6 +44,7 @@ const mongoClient = new MongoClient(process.env.MONGODB_URI, {
 });
 
 let db;
+let mesh = null;
 let availableRooms = [];
 
 // Browser origins allowed to connect. Comma-separated; "*" allows any origin,
@@ -93,6 +96,8 @@ const WORLD_HEIGHT = 600;
 const PROXIMITY_RADIUS = 100;
 // Hysteresis: connect at 100px, but only disconnect past 115px.
 const PROXIMITY_LEAVE_RADIUS = 115;
+// Cap on how many peers one client connects to — the mesh must stay bounded.
+const MAX_MESH_PEERS = 8;
 const DEFAULT_AVATAR_COLOR = "#6ee7b7";
 const HEX_COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const PLAYER_RADIUS = 20;
@@ -170,21 +175,12 @@ async function syncProximity(socketId, player) {
     .project({ _id: 0, socketId: 1, name: 1, avatarColor: 1, x: 1, y: 1 })
     .toArray();
 
-  // Same space only — and hysteresis, so hovering at the edge doesn't thrash.
-  const nearbyList = nearbyPlayers
+  // Same space only, then hysteresis, then the nearest peers — a full mesh does
+  // not scale, so each client connects only to those closest to them.
+  const candidates = nearbyPlayers
     .filter((nearbyPlayer) => {
       const peer = players.get(nearbyPlayer.socketId);
-      if (!peer || peer.room !== player.room) return false;
-
-      return isWithinProximity({
-        distance: Math.hypot(
-          nearbyPlayer.x - player.x,
-          nearbyPlayer.y - player.y
-        ),
-        isAlreadyNearby: oldNearby.has(nearbyPlayer.socketId),
-        enterRadius: PROXIMITY_RADIUS,
-        leaveRadius: PROXIMITY_LEAVE_RADIUS,
-      });
+      return peer && peer.room === player.room;
     })
     .map((nearbyPlayer) => ({
       id: nearbyPlayer.socketId,
@@ -193,7 +189,21 @@ async function syncProximity(socketId, player) {
       avatarColor: nearbyPlayer.avatarColor || DEFAULT_AVATAR_COLOR,
       x: nearbyPlayer.x,
       y: nearbyPlayer.y,
-    }));
+      distance: Math.hypot(
+        nearbyPlayer.x - player.x,
+        nearbyPlayer.y - player.y
+      ),
+    }))
+    .filter((candidate) =>
+      isWithinProximity({
+        distance: candidate.distance,
+        isAlreadyNearby: oldNearby.has(candidate.id),
+        enterRadius: PROXIMITY_RADIUS,
+        leaveRadius: PROXIMITY_LEAVE_RADIUS,
+      })
+    );
+
+  const nearbyList = nearestPeers(candidates, MAX_MESH_PEERS);
 
   io.to(socketId).emit("player:nearby", nearbyList);
 
@@ -783,6 +793,18 @@ async function startServer() {
 
     console.log("MongoDB connected successfully!");
 
+    // Scale out: with REDIS_URL set, instances share rooms and events via Redis.
+    try {
+      mesh = await attachMesh(io, process.env.REDIS_URL);
+      console.log(
+        mesh
+          ? "Redis mesh attached — multi-instance ready."
+          : "No REDIS_URL — running as a single instance."
+      );
+    } catch (error) {
+      console.error("Redis mesh failed to attach:", error.message);
+    }
+
     httpServer.listen(PORT, () => {
       console.log(`ProxiSpeak server running at http://localhost:${PORT}`);
     });
@@ -811,6 +833,7 @@ async function shutdown(signal) {
   try {
     io.close();
     httpServer.close();
+    await detachMesh(mesh);
     await mongoClient.close();
   } catch (error) {
     console.error("Error during shutdown:", error.message);

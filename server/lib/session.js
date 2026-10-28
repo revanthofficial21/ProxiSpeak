@@ -94,6 +94,19 @@ function isWithinProximity({
   return isAlreadyNearby ? distance <= leaveRadius : distance <= enterRadius;
 }
 
+// The mesh only connects a client to its nearest peers. A full mesh — everyone
+// in earshot connected to everyone — does not scale past a few dozen people.
+function nearestPeers(peers, limit) {
+  if (!Array.isArray(peers)) return [];
+
+  const sorted = [...peers].sort(
+    (a, b) => (a?.distance ?? Infinity) - (b?.distance ?? Infinity)
+  );
+
+  if (!Number.isFinite(limit) || limit <= 0) return sorted;
+  return sorted.slice(0, limit);
+}
+
 module.exports = {
   MAX_NAME_LENGTH,
   allocateSpawnPosition,
@@ -101,4 +114,5 @@ module.exports = {
   normalizeDisplayName,
   diffProximity,
   isWithinProximity,
+  nearestPeers,
 };

@@ -198,6 +198,24 @@ microphone** in each, and move the avatars within 100px to connect.
 | `client` | `npm run dev` | Start the Vite dev server |
 | `client` | `npm run build` | Production build |
 
+## Scaling across instances
+
+The server runs as a single instance by default. Set `REDIS_URL` and it attaches
+Socket.IO's Redis adapter, so several instances share rooms and events — a player
+connected to one process can be heard by a player on another.
+
+```bash
+REDIS_URL=redis://localhost:6379 npm run dev:server
+```
+
+Each client only opens connections to its **eight nearest** peers in earshot
+(`MAX_MESH_PEERS` in `server/index.js`). A full mesh — everyone connected to
+everyone — does not scale past a few dozen people in one place, so the cap keeps
+bandwidth and CPU bounded as the room fills.
+
+The mesh is optional and fails soft: if `REDIS_URL` is unset, or Redis is
+unreachable, the server logs it and continues as a single instance.
+
 ## Deploying
 
 **Checklist before you deploy:**
