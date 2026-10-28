@@ -1,5 +1,11 @@
 const AVATAR_COLORS = ["mint", "blue", "violet", "coral", "gold"];
 
+function normalizePlayerName(name) {
+  if (typeof name !== "string") return null;
+  const normalizedName = name.trim();
+  return normalizedName && normalizedName.length <= 30 ? normalizedName : null;
+}
+
 function positionFields(x, y) {
   return {
     x,
@@ -33,6 +39,20 @@ function markPlayerDisconnected(collection, socketId) {
     {
       $set: {
         connected: false,
+        updatedAt: new Date(),
+      },
+    }
+  );
+}
+
+function savePlayerPosition(collection, socketId, player) {
+  return collection.updateOne(
+    { socketId, connected: true },
+    {
+      $set: {
+        name: player.name,
+        ...positionFields(player.x, player.y),
+        connected: true,
         updatedAt: new Date(),
       },
     }
@@ -152,7 +172,9 @@ module.exports = {
   markPlayerConnected,
   markPlayerDisconnected,
   normalizeAvatarPrefs,
+  normalizePlayerName,
   positionFields,
   restoreReturningPlayer,
+  savePlayerPosition,
   saveAvatarPrefs,
 };

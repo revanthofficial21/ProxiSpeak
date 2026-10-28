@@ -7,19 +7,31 @@ const { Server } = require("socket.io");
 require("dotenv").config();
 const { MongoClient } = require("mongodb");
 const {
+  createActivityNotification,
+  createRoomSwitchNotification,
+  getNewProximityEntries,
+  isCurrentPlayerSession,
+} = require("./activity");
+const {
   markPlayerConnected,
   markPlayerDisconnected,
   normalizeAvatarPrefs,
+  normalizePlayerName,
   positionFields,
   restoreReturningPlayer,
+  savePlayerPosition,
   saveAvatarPrefs,
 } = require("./player-persistence");
-const { createChatMessage } = require("./chat");
+const {
+  createChatMessage,
+  createChatUnreadNotification,
+} = require("./chat");
 const {
   DEFAULT_ROOM,
   normalizeRoomName,
   roomChannel,
   getPlayersInRoom,
+  getPresenceSnapshot,
   getNearbyPlayersInRoom,
 } = require("./rooms");
 const {
@@ -53,6 +65,7 @@ const players = new Map();
 // Tracks which players are currently within proximity of each other.
 // Drives the enter/leave events and gates the WebRTC signaling relay.
 const proximityState = new Map();
+const nearbyPayloadState = new Map();
 const meetingCallParticipants = new Set();
 
 const WORLD_WIDTH = 1000;
@@ -63,6 +76,32 @@ const SPAWN_SPACINGS = [80, 60, 40];
 const SPAWN_MARGIN = PLAYER_RADIUS + 20;
 const spawnSlots = new Map();
 let chatMessageId = 0;
+let activityNotificationId = 0;
+
+function nextActivityId() {
+  activityNotificationId += 1;
+  return `activity-${Date.now()}-${activityNotificationId}`;
+}
+
+function publishActivityToRoom(room, notification, excludedSocketId) {
+  if (!notification || !normalizeRoomName(room)) return;
+  try {
+    let audience = io.to(roomChannel(room));
+    if (excludedSocketId) audience = audience.except(excludedSocketId);
+    audience.emit("activity:notification", notification);
+  } catch (error) {
+    console.error("Failed to publish activity notification:", error.message);
+  }
+}
+
+function publishActivityToPlayer(playerId, notification) {
+  if (typeof playerId !== "string" || !notification) return;
+  try {
+    io.to(playerId).emit("activity:notification", notification);
+  } catch (error) {
+    console.error("Failed to publish proximity notification:", error.message);
+  }
+}
 
 function allocateSpawnPosition() {
   const occupiedPositions = Array.from(spawnSlots.values());
@@ -113,6 +152,28 @@ function publicPlayer(player) {
     y: player.y,
     avatarPrefs: player.avatarPrefs,
   };
+}
+
+function emitPresenceState() {
+  io.emit("presence:state", getPresenceSnapshot(players));
+}
+
+function hasSameNearbyPlayers(previous, next) {
+  return Boolean(
+    previous &&
+      previous.length === next.length &&
+      previous.every((player, index) => {
+        const nextPlayer = next[index];
+        return (
+          player.id === nextPlayer.id &&
+          player.name === nextPlayer.name &&
+          player.x === nextPlayer.x &&
+          player.y === nextPlayer.y &&
+          player.distance === nextPlayer.distance &&
+          player.avatarPrefs?.color === nextPlayer.avatarPrefs?.color
+        );
+      })
+  );
 }
 
 // Relay a WebRTC signal to a peer, but only when the two are within proximity.
@@ -175,17 +236,27 @@ async function updatePlayerProximity(socket, player) {
       distance: nearbyPlayer.distance,
     }));
 
-  socket.emit("player:nearby", nearbyList);
+  if (!hasSameNearbyPlayers(nearbyPayloadState.get(socket.id), nearbyList)) {
+    socket.emit("player:nearby", nearbyList);
+    nearbyPayloadState.set(socket.id, nearbyList);
+  }
 
   const newNearby = new Set(nearbyList.map((nearbyPlayer) => nearbyPlayer.id));
   const oldNearby = proximityState.get(socket.id) || new Set();
 
-  for (const peerId of newNearby) {
-    if (oldNearby.has(peerId)) continue;
-
+  for (const peerId of getNewProximityEntries(oldNearby, newNearby)) {
     const nearbyPlayer = nearbyList.find((candidate) => candidate.id === peerId);
     socket.emit("proximity:enter", nearbyPlayer);
     io.to(peerId).emit("proximity:enter", publicPlayer(player));
+    publishActivityToPlayer(
+      peerId,
+      createActivityNotification(
+        "proximity-enter",
+        player,
+        room,
+        nextActivityId()
+      )
+    );
 
     const peerSet = proximityState.get(peerId) || new Set();
     peerSet.add(socket.id);
@@ -231,6 +302,7 @@ io.on("connection", async (socket) => {
 
   players.set(socket.id, player);
   await socket.join(roomChannel(player.room));
+  emitPresenceState();
 
   // Save the player's initial position.
   const playerCollection = db.collection("players");
@@ -255,6 +327,16 @@ io.on("connection", async (socket) => {
     players: getPlayersInRoom(players, player.room).map(publicPlayer),
   });
   socket.to(roomChannel(player.room)).emit("player:joined", publicPlayer(player));
+  publishActivityToRoom(
+    player.room,
+    createActivityNotification(
+      "player-joined",
+      player,
+      player.room,
+      nextActivityId()
+    ),
+    socket.id
+  );
 
   // WebRTC signaling is limited to same-room proximity peers or call members.
   socket.on("webrtc:offer", (data) => {
@@ -408,6 +490,15 @@ io.on("connection", async (socket) => {
       ...message,
       room: players.get(socket.id).room,
     });
+    const unreadNotification = createChatUnreadNotification(
+      players.get(socket.id).room
+    );
+    if (unreadNotification) {
+      io.except(roomChannel(unreadNotification.room)).emit(
+        "chat:unread",
+        unreadNotification
+      );
+    }
     if (typeof callback === "function") {
       callback({ success: true });
     }
@@ -444,8 +535,23 @@ io.on("connection", async (socket) => {
 
     try {
       await socket.join(nextChannel);
+      if (players.get(socket.id) !== currentPlayer) {
+        await socket.leave(nextChannel);
+        reply({ success: false, error: "Player session is no longer active" });
+        return;
+      }
       await leaveMeetingCall(socket);
+      if (players.get(socket.id) !== currentPlayer) {
+        await socket.leave(nextChannel);
+        reply({ success: false, error: "Player session is no longer active" });
+        return;
+      }
       await socket.leave(previousChannel);
+      if (players.get(socket.id) !== currentPlayer) {
+        await socket.leave(nextChannel);
+        reply({ success: false, error: "Player session is no longer active" });
+        return;
+      }
 
       const nearSet = proximityState.get(socket.id);
       if (nearSet) {
@@ -456,15 +562,27 @@ io.on("connection", async (socket) => {
         }
         proximityState.delete(socket.id);
       }
+      nearbyPayloadState.delete(socket.id);
 
       socket.to(previousChannel).emit("player:left", socket.id);
       currentPlayer.room = roomName;
       players.set(socket.id, currentPlayer);
+      emitPresenceState();
       socket.emit("room:state", {
         room: roomName,
         players: getPlayersInRoom(players, roomName).map(publicPlayer),
       });
       socket.to(nextChannel).emit("player:joined", publicPlayer(currentPlayer));
+      const roomSwitchNotification = createRoomSwitchNotification(
+        currentPlayer,
+        previousRoom,
+        roomName,
+        nextActivityId()
+      );
+      publishActivityToRoom(previousRoom, roomSwitchNotification, socket.id);
+      if (roomName !== previousRoom) {
+        publishActivityToRoom(roomName, roomSwitchNotification, socket.id);
+      }
       updatePlayerProximity(socket, currentPlayer).catch((error) => {
         console.error(
           "Failed to update proximity after room switch:",
@@ -483,7 +601,8 @@ io.on("connection", async (socket) => {
 
   // Save the player's name.
   socket.on("player:setName", async (name, callback) => {
-    if (typeof name !== "string" || !name.trim()) {
+    const normalizedName = normalizePlayerName(name);
+    if (!normalizedName) {
       if (typeof callback === "function") {
         callback({
           success: false,
@@ -505,17 +624,20 @@ io.on("connection", async (socket) => {
       return;
     }
 
-    currentPlayer.name = name.trim().slice(0, 30);
-
     try {
       await initialPlayerSave;
-
+      if (!socket.connected || players.get(socket.id) !== currentPlayer) {
+        if (typeof callback === "function") {
+          callback({ success: false, error: "Player session is no longer active" });
+        }
+        return;
+      }
       // No session/transaction: a single-document claim is atomic on its own,
       // so this works on a standalone MongoDB too (transactions need a replica
       // set).
       const returningPlayer = await restoreReturningPlayer(
         playerCollection,
-        currentPlayer.name,
+        normalizedName,
         socket.id,
         (savedPlayer) => ({
           x: Math.max(
@@ -529,6 +651,16 @@ io.on("connection", async (socket) => {
         })
       );
 
+      if (!socket.connected || players.get(socket.id) !== currentPlayer) {
+        if (returningPlayer) {
+          await markPlayerDisconnected(playerCollection, socket.id);
+        }
+        if (typeof callback === "function") {
+          callback({ success: false, error: "Player session is no longer active" });
+        }
+        return;
+      }
+
       let result;
       if (returningPlayer) {
         currentPlayer.x = returningPlayer.x;
@@ -541,10 +673,10 @@ io.on("connection", async (socket) => {
         result = { matchedCount: 1 };
       } else {
         result = await playerCollection.updateOne(
-          { socketId: socket.id },
+          { socketId: socket.id, connected: true },
           {
             $set: {
-              name: currentPlayer.name,
+              name: normalizedName,
               ...positionFields(currentPlayer.x, currentPlayer.y),
               updatedAt: new Date(),
               connected: true,
@@ -553,7 +685,7 @@ io.on("connection", async (socket) => {
         );
       }
 
-      console.log("Player name:", currentPlayer.name);
+      console.log("Player name:", normalizedName);
       console.log("MongoDB matched:", result.matchedCount);
 
       if (result.matchedCount === 0) {
@@ -566,11 +698,20 @@ io.on("connection", async (socket) => {
         return;
       }
 
+      if (!socket.connected || players.get(socket.id) !== currentPlayer) {
+        if (typeof callback === "function") {
+          callback({ success: false, error: "Player session is no longer active" });
+        }
+        return;
+      }
+
+      currentPlayer.name = normalizedName;
       players.set(socket.id, currentPlayer);
       io.to(roomChannel(currentPlayer.room)).emit(
         "player:renamed",
         publicPlayer(currentPlayer)
       );
+      emitPresenceState();
       if (returningPlayer) {
         io.to(roomChannel(currentPlayer.room)).emit(
           "player:moved",
@@ -590,6 +731,9 @@ io.on("connection", async (socket) => {
           name: currentPlayer.name,
           restored: Boolean(returningPlayer),
           avatarPrefs: currentPlayer.avatarPrefs,
+          position: returningPlayer
+            ? { x: currentPlayer.x, y: currentPlayer.y }
+            : undefined,
         });
       }
     } catch (error) {
@@ -643,12 +787,20 @@ io.on("connection", async (socket) => {
         return;
       }
 
+      if (!socket.connected || players.get(socket.id) !== currentPlayer) {
+        if (typeof callback === "function") {
+          callback({ success: false, error: "Player session is no longer active" });
+        }
+        return;
+      }
+
       currentPlayer.avatarPrefs = normalizedPrefs;
       players.set(socket.id, currentPlayer);
       io.to(roomChannel(currentPlayer.room)).emit(
         "player:avatarPrefs",
         publicPlayer(currentPlayer)
       );
+      emitPresenceState();
 
       if (typeof callback === "function") {
         callback({
@@ -688,20 +840,22 @@ io.on("connection", async (socket) => {
       y: Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, position.y)),
     };
 
+    if (
+      updatedPlayer.x === currentPlayer.x &&
+      updatedPlayer.y === currentPlayer.y
+    ) {
+      return;
+    }
+
     players.set(socket.id, updatedPlayer);
 
     try {
-      await db.collection("players").updateOne(
-        { socketId: socket.id },
-        {
-          $set: {
-            name: updatedPlayer.name,
-            ...positionFields(updatedPlayer.x, updatedPlayer.y),
-            connected: true,
-            updatedAt: new Date(),
-          },
-        }
+      const positionSave = await savePlayerPosition(
+        db.collection("players"),
+        socket.id,
+        updatedPlayer
       );
+      if (positionSave.matchedCount !== 1) return;
 
       if (
         players.get(socket.id) !== updatedPlayer ||
@@ -727,9 +881,26 @@ io.on("connection", async (socket) => {
   // Handle player disconnection.
   socket.on("disconnect", () => {
     const disconnectedPlayer = players.get(socket.id);
+    if (
+      !isCurrentPlayerSession(players, socket.id, disconnectedPlayer)
+    ) {
+      return;
+    }
+
     const playerChannel = roomChannel(disconnectedPlayer?.room);
+    publishActivityToRoom(
+      disconnectedPlayer.room,
+      createActivityNotification(
+        "player-left",
+        disconnectedPlayer,
+        disconnectedPlayer.room,
+        nextActivityId()
+      ),
+      socket.id
+    );
     players.delete(socket.id);
     spawnSlots.delete(socket.id);
+    nearbyPayloadState.delete(socket.id);
     leaveMeetingCall(socket).catch((error) => {
       console.error("Failed to clean up disconnected meeting participant:", error.message);
     });
@@ -756,6 +927,7 @@ io.on("connection", async (socket) => {
     if (playerChannel) {
       socket.to(playerChannel).emit("player:left", socket.id);
     }
+    emitPresenceState();
     console.log(`Player disconnected: ${socket.id}`);
   });
 });

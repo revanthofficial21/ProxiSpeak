@@ -1,5 +1,6 @@
 const {
   createChatMessage,
+  createChatUnreadNotification,
   MAX_CHAT_MESSAGE_LENGTH,
 } = require("./chat");
 
@@ -43,6 +44,12 @@ check(
   createChatMessage(null, "Hello", 6) === null &&
     createChatMessage({ id: "socket-2", name: "" }, "Hello", 7)
       ?.senderName === "Player"
+);
+
+check(
+  "unread notifications include only allow-listed rooms",
+  createChatUnreadNotification("Meeting Room")?.room === "Meeting Room" &&
+    createChatUnreadNotification("unknown") === null
 );
 
 console.log(

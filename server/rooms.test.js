@@ -4,6 +4,7 @@ const {
   normalizeRoomName,
   roomChannel,
   getPlayersInRoom,
+  getPresenceSnapshot,
   arePlayersInSameRoom,
   getNearbyPlayersInRoom,
 } = require("./rooms");
@@ -47,6 +48,24 @@ check(
   getPlayersInRoom(players, "Lounge").map((player) => player.id).join(",") ===
     "lounge-a,lounge-b" &&
     getPlayersInRoom(players, "Meeting Room").length === 0
+);
+
+const presenceSnapshot = getPresenceSnapshot(
+  new Map([
+    ["lounge", { id: "lounge", name: "Lee", room: "Lounge" }],
+    ["focus", { id: "focus", name: "Faye", room: "Focus Space" }],
+    ["invalid", { id: "invalid", name: "Unknown", room: "Secret Room" }],
+  ])
+);
+check(
+  "presence snapshots list valid online players and their current rooms",
+  presenceSnapshot.length === 2 &&
+    presenceSnapshot.map(({ room }) => room).join(",") ===
+      "Lounge,Focus Space" &&
+    presenceSnapshot.every(
+      (player) => Object.keys(player).sort().join(",") ===
+        "avatarPrefs,id,name,room"
+    )
 );
 
 check(

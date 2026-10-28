@@ -17,6 +17,17 @@ function getPlayersInRoom(players, roomName) {
   );
 }
 
+function getPresenceSnapshot(players) {
+  return Array.from(players.values())
+    .filter((player) => normalizeRoomName(player.room))
+    .map((player) => ({
+      id: player.id,
+      name: player.name || `Player ${player.id.slice(0, 4)}`,
+      room: player.room,
+      avatarPrefs: player.avatarPrefs,
+    }));
+}
+
 function arePlayersInSameRoom(playerA, playerB) {
   return Boolean(
     playerA &&
@@ -44,6 +55,7 @@ module.exports = {
   normalizeRoomName,
   roomChannel,
   getPlayersInRoom,
+  getPresenceSnapshot,
   arePlayersInSameRoom,
   getNearbyPlayersInRoom,
 };

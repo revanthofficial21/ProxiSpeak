@@ -1,4 +1,5 @@
 const MAX_CHAT_MESSAGE_LENGTH = 500;
+const { normalizeRoomName } = require("./rooms");
 
 function createChatMessage(player, text, id) {
   if (
@@ -26,4 +27,13 @@ function createChatMessage(player, text, id) {
   };
 }
 
-module.exports = { createChatMessage, MAX_CHAT_MESSAGE_LENGTH };
+function createChatUnreadNotification(room) {
+  const normalizedRoom = normalizeRoomName(room);
+  return normalizedRoom ? { room: normalizedRoom } : null;
+}
+
+module.exports = {
+  createChatMessage,
+  createChatUnreadNotification,
+  MAX_CHAT_MESSAGE_LENGTH,
+};

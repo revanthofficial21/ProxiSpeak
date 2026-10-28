@@ -75,7 +75,7 @@ to keep the experience seamless for 50+ concurrent users in one space.
 ProxiSpeak/
 ├── client/                     # React frontend
 │   ├── src/
-│   │   ├── App.jsx             # Canvas world, movement, WebRTC client, nearby + audio UI
+│   │   ├── App.jsx             # Canvas, profiles, presence, room chat, WebRTC + audio UI
 │   │   ├── App.css             # Styling
 │   │   ├── main.jsx            # React entry point
 │   │   └── index.css
@@ -83,10 +83,14 @@ ProxiSpeak/
 │   └── vite.config.js
 │
 ├── server/                     # Node.js backend
-│   ├── index.js                # Express + Socket.IO: movement, proximity, WebRTC signaling relay
+│   ├── index.js                # Express + Socket.IO: presence, chat, movement + signaling
 │   ├── db.js                   # MongoDB connection helper
+│   ├── player-persistence.js   # Player profile and reconnect persistence helpers
+│   ├── chat.js                 # Room chat validation and unread notifications
+│   ├── rooms.js                # Room membership and presence snapshots
+│   ├── meeting-call.js         # Meeting call membership and signaling rules
 │   ├── proximity.js            # Pure-JS proximity oracle (reference implementation)
-│   ├── proximity.test.js       # Proximity unit tests
+│   ├── *.test.js               # Backend unit tests
 │   └── audit.js                # Spatial audit — correctness + latency benchmark
 │
 ├── WebRTC-Research.md          # WebRTC research notes
@@ -100,20 +104,28 @@ ProxiSpeak/
    non-overlapping spawn slot and stores the player in MongoDB with a
    `location: [x, y]` field. Players enter the Lounge by default and can switch
    between the Lounge, Meeting Room, and Focus Space.
-2. **Move.** The client moves the avatar locally (WASD / arrow keys, with
+   The online-player list reports each connected player's current room.
+2. **Profile.** Players can save a display name and allow-listed avatar color.
+   On later connections in the same browser, the saved display name is sent
+   again so the server can restore a unique inactive player record and its
+   preferences. Profile updates are scoped to the active socket; restoration
+   claims only a unique inactive record.
+3. **Move.** The client moves the avatar locally (WASD / arrow keys, with
    furniture collision) and broadcasts `player:move` (throttled ~40 ms). The
    server clamps the position, persists it, and broadcasts `player:moved`.
-3. **Proximity.** On each move the server runs a MongoDB `$near` query with a
+4. **Proximity.** On each changed position the server runs a MongoDB `$near` query with a
    **100px** `$maxDistance` to find who is within earshot, and emits
-   `proximity:enter` / `proximity:leave` to **both** players as they come into or
-   leave range.
-4. **Signaling.** Clients exchange `webrtc:offer` / `webrtc:answer` / `webrtc:ice`
+   `player:nearby` and `proximity:enter` / `proximity:leave` only for valid
+   same-room peers.
+5. **Chat.** Messages remain scoped to the sender's room; players in other rooms
+   receive unread counts, which clear when they open that room.
+6. **Signaling.** Clients exchange `webrtc:offer` / `webrtc:answer` / `webrtc:ice`
    through the server, which relays only between same-room nearby players or
    members of a validated Meeting Room call.
-5. **Audio.** A `RTCPeerConnection` is established per nearby peer; remote audio
+7. **Audio.** A `RTCPeerConnection` is established per nearby peer; remote audio
    plays through its own audio element. *(Next: route it through the Web Audio
    API for distance-based gain and panning.)*
-6. **Meeting calls.** Players in Meeting Room can join an audio/video call.
+8. **Meeting calls.** Players in Meeting Room can join an audio/video call.
    Call participants reuse the existing peer connections; camera tracks are
    shared only with other members of that call. A microphone track already
    captured for proximity audio is reused rather than captured again.
@@ -132,13 +144,16 @@ The `players` collection (MongoDB):
 | `connected` | boolean | Whether the player is currently connected |
 | `createdAt` / `updatedAt` | Date | Timestamps |
 
-Players can save their display name and avatar color from the profile form.
-Preferences are stored separately from position and session state, and are
-restored with the existing unique-display-name reconnect flow when the prior
-player record is inactive.
+Players can save their display name (1–30 characters) and avatar color from
+the profile form. Preferences are stored in MongoDB and restored when exactly
+one inactive record matches the returning display name. The browser remembers
+the last saved display name locally so a reconnect can request that restoration.
+Avatar preferences are allow-listed by the server, and profile writes are
+bound to the active socket; reconnect restoration only claims a unique,
+inactive record.
 The active room is maintained by the server for each live socket session and
-is not persisted in MongoDB. Presence, movement, proximity audio, and chat are
-isolated to players in the same room.
+is not persisted in MongoDB. Presence is visible across rooms; movement,
+proximity audio, and chat remain isolated to players in the same room.
 
 ## 8. Realtime Events
 
@@ -166,8 +181,18 @@ isolated to players in the same room.
 | `player:renamed` | player |
 | `player:avatarPrefs` | player |
 | `chat:message` | room-scoped chat message |
+| `chat:unread` | `{ room }` for a message in a different room |
+| `presence:state` | online players with their current room |
+| `activity:notification` | validated activity item with type, player name, room, message, and server timestamp |
 | `player:nearby` | array of nearby players |
 | `proximity:enter` / `proximity:leave` | peer / peer id |
+
+Activity notifications are real-time and in-memory only. Joins and disconnects
+are sent to other players in that room; room switches are sent to the source
+and destination rooms; proximity entry is sent only to the player being
+approached, and only on an outside-to-inside 100px transition. The client keeps
+the latest 50 items in newest-first order and supports mark-all-read and clear
+actions. Notifications are not stored in MongoDB.
 
 ## 9. Getting Started
 
@@ -203,10 +228,29 @@ microphone** in each, and move the avatars within 100px to connect.
 |---|---|---|
 | `server` | `npm run dev` | Start backend with nodemon |
 | `server` | `npm start` | Start backend |
-| `server` | `npm test` | Run proximity unit tests |
+| `server` | `npm test` | Run all backend unit tests (profiles, chat, rooms, proximity, calls, activity) |
 | `server` | `npm run audit` | Run the spatial audit (correctness + latency) |
 | `client` | `npm run dev` | Start the Vite dev server |
 | `client` | `npm run build` | Production build |
+| `client` | `npm run lint` | Run the frontend ESLint checks |
+| `client` | `npm test` | Test activity notification validation, limits, and unread state |
+
+### Week 3 verification
+
+Run `npm test` from `server/`, and `npm test`, `npm run build`, and
+`npm run lint` from `client/`.
+For a browser check, open two tabs at `http://localhost:5173`, save a profile in
+one tab, then move the other tab between rooms. Confirm the online list shows
+the room for each player, room chat messages do not appear in other rooms, and
+the unread count clears when the relevant room is opened. Reload a tab using a
+saved profile name to check profile restoration and color persistence.
+For activity notifications, connect a second player in the same room and verify
+the joining and disconnecting player appears once in Activity for the other
+tab. Switch rooms and check the notification is visible only to players in the
+source or destination room. Move into and out of 100px range, then re-enter;
+the approached player should get one notification per entry, not one per
+movement update. Check that Mark all read clears the badge and Clear empties
+the list.
 
 ## 10. Progress
 
@@ -215,14 +259,18 @@ microphone** in each, and move the avatars within 100px to connect.
 | **Week 1** | Signaling & Movement — position broadcast, MongoDB geospatial schema, canvas world, keyboard movement | ✅ Done |
 | **Week 2** | Proximity Calculations (`$near`, 100px gating) + WebRTC Integration (`getUserMedia`, peer audio) | ✅ Done |
 | **Mid-Review** | Spatial Audit (sub-20ms proof) + Audio Check (two-browser demo) | 🟡 Tooling ready — execution/evidence pending |
-| **Week 3** | Mesh Scaling (Redis Pub/Sub, multi-instance) + Dynamic Attenuation (Web Audio gain) | ⬜ Not started |
+| **Week 3** | Persistent profiles, room presence, unread room chat, proximity integration, activity notifications | ✅ Core features implemented |
 | **Week 4** | Room Persistence (layouts + sound-blocking obstacles) + Polish (3D panning, 60 FPS) | ⬜ Not started |
 
-**Working today:** live multiplayer movement, MongoDB `$near` proximity grouping,
-proximity-gated WebRTC signaling, and peer-to-peer audio between nearby avatars.
+**Working today:** live multiplayer movement, persistent player profiles,
+cross-room online presence, room chat with unread counts, MongoDB `$near`
+proximity grouping, proximity-gated WebRTC signaling, and peer-to-peer audio
+between nearby avatars.
 
 **Not yet built:** the Web Audio spatial mixer (gain/panning), Redis-backed mesh
-scaling, room/furniture persistence, and sound occlusion.
+scaling, room/furniture persistence, and sound occlusion. Display-name-based
+profile restoration is not an authentication system; it only restores a unique
+inactive record, and rooms are not persisted between sessions.
 
 ## 11. Team & Roles
 

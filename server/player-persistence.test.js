@@ -2,8 +2,10 @@ const {
   markPlayerConnected,
   markPlayerDisconnected,
   normalizeAvatarPrefs,
+  normalizePlayerName,
   positionFields,
   restoreReturningPlayer,
+  savePlayerPosition,
   saveAvatarPrefs,
 } = require("./player-persistence");
 
@@ -138,6 +140,14 @@ async function runTests() {
       normalizeAvatarPrefs({ color: "#123456" }) === null &&
       normalizeAvatarPrefs(["mint"]) === null
   );
+  check(
+    "display names are trimmed and limited to 30 characters",
+    normalizePlayerName("  Naseema  ") === "Naseema" &&
+      normalizePlayerName("x".repeat(30))?.length === 30 &&
+      normalizePlayerName("") === null &&
+      normalizePlayerName("x".repeat(31)) === null &&
+      normalizePlayerName({ name: "Player" }) === null
+  );
 
   const avatarRecord = {
     socketId: "avatar-session",
@@ -223,6 +233,44 @@ async function runTests() {
       sessionRecords[0].connected === false &&
       statusCollection.updates.at(-1).filter.socketId === "session-a" &&
       statusCollection.updates.at(-1).filter.connected === true
+  );
+
+  const positionRecord = {
+    socketId: "position-session",
+    connected: true,
+    name: "Position Player",
+    x: 100,
+    y: 120,
+    location: [100, 120],
+  };
+  const inactivePositionRecord = { ...positionRecord, connected: false };
+  const positionCollection = createSessionStatusCollection([positionRecord]);
+  const positionSave = await savePlayerPosition(
+    positionCollection,
+    "position-session",
+    { name: "Position Player", x: 200, y: 240 }
+  );
+  const positionUpdate = positionCollection.updates[0];
+  const inactivePositionCollection = createSessionStatusCollection([
+    inactivePositionRecord,
+  ]);
+  const inactivePositionSave = await savePlayerPosition(
+    inactivePositionCollection,
+    "position-session",
+    { name: "Stale Player", x: 500, y: 500 }
+  );
+  check(
+    "movement persists only for its active socket and cannot revive an inactive session",
+    positionSave.matchedCount === 1 &&
+      positionRecord.x === 200 &&
+      positionRecord.y === 240 &&
+      positionRecord.location[0] === 200 &&
+      positionRecord.location[1] === 240 &&
+      positionUpdate.filter.socketId === "position-session" &&
+      positionUpdate.filter.connected === true &&
+      inactivePositionSave.matchedCount === 0 &&
+      inactivePositionRecord.x === 100 &&
+      inactivePositionRecord.connected === false
   );
 
   const newerSession = {

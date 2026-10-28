@@ -265,6 +265,123 @@ button:disabled {
   font-size: 12px;
 }
 
+.presence-panel {
+  margin: 16px 0 24px;
+  padding: 14px 18px;
+  border: 1px solid #263449;
+  border-radius: 12px;
+  background: #101827;
+  color: #cbd5e1;
+}
+
+.presence-panel > strong {
+  color: #6ee7b7;
+}
+
+.presence-panel ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 16px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.presence-panel li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid #263449;
+  font-size: 12px;
+}
+
+.presence-panel li span:last-child {
+  color: #8190a6;
+}
+
+.activity-panel {
+  margin: 0 0 24px;
+  padding: 14px 18px;
+  border: 1px solid #263449;
+  border-radius: 12px;
+  background: #101827;
+  color: #cbd5e1;
+}
+
+.activity-panel-heading,
+.activity-panel-heading > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.activity-panel-heading > strong {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #6ee7b7;
+}
+
+.activity-badge {
+  display: inline-grid;
+  min-width: 20px;
+  height: 20px;
+  place-items: center;
+  padding: 0 5px;
+  border-radius: 10px;
+  background: #fb7185;
+  color: #3b0710;
+  font-size: 11px;
+}
+
+.activity-panel button {
+  padding: 6px 10px;
+  border: 1px solid #35445a;
+  border-radius: 7px;
+  background: #1b2739;
+  color: #cbd5e1;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.activity-list {
+  max-height: 300px;
+  margin: 12px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.activity-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-top: 1px solid #263449;
+  font-size: 12px;
+}
+
+.activity-list .activity-unread > span:first-child {
+  color: #f8fafc;
+  font-weight: 600;
+}
+
+.activity-read > span:first-child {
+  color: #aab8cb;
+}
+
+.activity-details {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  color: #8190a6;
+  font-size: 11px;
+}
+
 .world-toolbar {
   min-height: 58px;
   padding: 0 20px;
@@ -422,6 +539,16 @@ button:disabled {
 
   .chat-panel {
     max-height: 360px;
+  }
+
+  .activity-list li {
+    align-items: flex-start;
+  }
+
+  .activity-details {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
   }
 
   .world-subtitle,

@@ -1,6 +1,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
+import {
+  addActivityNotification,
+  getUnreadActivityCount,
+  markActivityNotificationsRead,
+  subscribeToActivityNotifications,
+} from "./activity-notifications.js";
 import "./App.css";
 
 const WORLD_WIDTH = 1000;
@@ -183,6 +189,22 @@ function hasSameNearbyDisplay(currentPlayers, nextPlayers) {
   );
 }
 
+function applyLocalProfile(players, response, color, socket) {
+  const localPlayer = players.get(socket.id);
+  if (!localPlayer) return;
+
+  players.set(socket.id, {
+    ...localPlayer,
+    name: response.name,
+    avatarPrefs: response.restored ? { color } : localPlayer.avatarPrefs,
+    ...(response.restored &&
+    Number.isFinite(response.position?.x) &&
+    Number.isFinite(response.position?.y)
+      ? { x: response.position.x, y: response.position.y }
+      : {}),
+  });
+}
+
 const obstacles = [
   { x: 100, y: 120, width: 120, height: 55 },
   { x: 300, y: 120, width: 120, height: 55 },
@@ -260,6 +282,7 @@ export default function App() {
   const pendingPeersRef = useRef(new Set());
   const pendingOffersRef = useRef(new Map());
   const pendingCandidatesRef = useRef(new Map());
+  const profileSyncSocketRef = useRef(null);
   const audioEnabledRef = useRef(false);
   const audioRequestRef = useRef(false);
   const meetingStreamRef = useRef(null);
@@ -274,7 +297,9 @@ export default function App() {
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [audioMuted, setAudioMuted] = useState(false);
   const [audioError, setAudioError] = useState("");
-  const [playerName, setPlayerName] = useState("");
+  const [playerName, setPlayerName] = useState(
+    () => localStorage.getItem("proxispeak.playerName") || ""
+  );
   const [avatarColor, setAvatarColor] = useState("mint");
   const [avatarPrefsDirty, setAvatarPrefsDirty] = useState(false);
   const [nameError, setNameError] = useState("");
@@ -295,6 +320,11 @@ export default function App() {
   const [currentRoom, setCurrentRoom] = useState(ROOMS[0]);
   const [roomError, setRoomError] = useState("");
   const [roomSwitching, setRoomSwitching] = useState(false);
+  const [onlinePlayers, setOnlinePlayers] = useState([]);
+  const [unreadCounts, setUnreadCounts] = useState({});
+  const [activityNotifications, setActivityNotifications] = useState([]);
+  const currentRoomRef = useRef(currentRoom);
+  const unreadActivityCount = getUnreadActivityCount(activityNotifications);
 
   const updatePlayerCount = useCallback(() => {
     setPlayerCount(playersRef.current.size);
@@ -861,13 +891,16 @@ export default function App() {
         return;
       }
       setPlayerName(response.name);
+      localStorage.setItem("proxispeak.playerName", response.name);
       const selectedColor =
         response.restored && !avatarPrefsDirty
           ? response.avatarPrefs?.color || "mint"
           : avatarColor;
+      applyLocalProfile(playersRef.current, response, selectedColor, socket);
 
       if (response.restored && !avatarPrefsDirty) {
         setAvatarColor(selectedColor);
+        localStorage.setItem("proxispeak.avatarColor", selectedColor);
         setAvatarPrefsDirty(false);
         setNameError("");
         return;
@@ -883,6 +916,7 @@ export default function App() {
             );
             return;
           }
+          localStorage.setItem("proxispeak.avatarColor", selectedColor);
           setAvatarPrefsDirty(false);
           setNameError("");
         }
@@ -921,6 +955,8 @@ export default function App() {
         return;
       }
       setCurrentRoom(response.room);
+      currentRoomRef.current = response.room;
+      setUnreadCounts((current) => ({ ...current, [response.room]: 0 }));
     });
   }, [cleanupMeetingCall, currentRoom, meetingCallJoined]);
 
@@ -928,6 +964,11 @@ export default function App() {
   useEffect(() => {
     const peers = peersRef.current;
     const socket = io(SERVER_URL);
+    const handleActivityNotification = (notification) => {
+      setActivityNotifications((current) =>
+        addActivityNotification(current, notification)
+      );
+    };
     socketRef.current = socket;
 
     socket.on("connect", () => {
@@ -936,6 +977,8 @@ export default function App() {
     });
     socket.on("disconnect", () => {
       setConnected(false);
+      profileSyncSocketRef.current = null;
+      setOnlinePlayers([]);
       setNearbyPlayers([]);
       nearbyRef.current = new Set();
       playersRef.current.clear();
@@ -967,10 +1010,52 @@ export default function App() {
       pendingOffersRef.current.clear();
       pendingCandidatesRef.current.clear();
       setCurrentRoom(room);
+      currentRoomRef.current = room;
+      setUnreadCounts((current) => ({ ...current, [room]: 0 }));
       setNearbyPlayers([]);
       setChatMessages([]);
       setRoomError("");
       updatePlayerCount();
+
+      if (profileSyncSocketRef.current !== socket.id) {
+        profileSyncSocketRef.current = socket.id;
+        const savedName = localStorage
+          .getItem("proxispeak.playerName")
+          ?.trim();
+        if (savedName) {
+          socket.emit("player:setName", savedName, (response) => {
+            if (!response?.success) {
+              profileSyncSocketRef.current = null;
+              setNameError(response?.error || "Could not restore your profile.");
+              return;
+            }
+
+            const savedColor = localStorage.getItem(
+              "proxispeak.avatarColor"
+            );
+            const color = response.restored
+              ? response.avatarPrefs?.color || "mint"
+              : Object.prototype.hasOwnProperty.call(AVATAR_PALETTE, savedColor)
+                ? savedColor
+                : "mint";
+            applyLocalProfile(playersRef.current, response, color, socket);
+            setPlayerName(response.name);
+            setAvatarColor(color);
+            localStorage.setItem("proxispeak.playerName", response.name);
+            localStorage.setItem("proxispeak.avatarColor", color);
+
+            if (!response.restored) {
+              socket.emit("player:setAvatarPrefs", { color }, (prefsResponse) => {
+                if (!prefsResponse?.success) {
+                  setNameError(
+                    prefsResponse?.error || "Could not restore avatar preferences."
+                  );
+                }
+              });
+            }
+          });
+        }
+      }
     });
 
     socket.on("world:state", (players) => {
@@ -982,6 +1067,18 @@ export default function App() {
           .map((player) => [player.id, player])
       );
       updatePlayerCount();
+    });
+
+    socket.on("presence:state", (players) => {
+      if (!Array.isArray(players)) return;
+      setOnlinePlayers(
+        players.filter(
+          (player) =>
+            player &&
+            typeof player.id === "string" &&
+            ROOMS.includes(player.room)
+        )
+      );
     });
 
     socket.on("player:joined", (player) => {
@@ -1062,6 +1159,17 @@ export default function App() {
       }
       setChatMessages((current) => [...current.slice(-99), message]);
     });
+
+    socket.on("chat:unread", ({ room } = {}) => {
+      if (!ROOMS.includes(room) || room === currentRoomRef.current) return;
+      setUnreadCounts((current) => ({
+        ...current,
+        [room]: (current[room] || 0) + 1,
+      }));
+    });
+
+    const unsubscribeActivityNotifications =
+      subscribeToActivityNotifications(socket, handleActivityNotification);
 
     socket.on("player:nearby", (list) => {
       const safe = Array.isArray(list)
@@ -1180,6 +1288,7 @@ export default function App() {
     });
 
     return () => {
+      unsubscribeActivityNotifications();
       socket.removeAllListeners();
       socket.disconnect();
       socketRef.current = null;
@@ -1459,7 +1568,10 @@ export default function App() {
                 onChange={joinRoom}
               >
                 {ROOMS.map((room) => (
-                  <option key={room} value={room}>{room}</option>
+                  <option key={room} value={room}>
+                    {room}
+                    {unreadCounts[room] ? ` (${unreadCounts[room]} unread)` : ""}
+                  </option>
                 ))}
               </select>
             </label>
@@ -1524,6 +1636,74 @@ export default function App() {
           {chatError && <p className="chat-error" role="alert">{chatError}</p>}
         </aside>
       </div>
+      <section className="presence-panel" aria-label="Online players">
+        <strong>Online players ({onlinePlayers.length})</strong>
+        {onlinePlayers.length === 0 ? (
+          <p className="chat-empty">No players are online.</p>
+        ) : (
+          <ul>
+            {onlinePlayers.map((player) => (
+              <li key={player.id}>
+                <span>{player.name || `Player ${player.id.slice(0, 4)}`}</span>
+                <span>{player.room}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      <section className="activity-panel" aria-label="Activity notifications">
+        <div className="activity-panel-heading">
+          <strong>
+            Activity
+            {unreadActivityCount > 0 && (
+              <span className="activity-badge" aria-label={`${unreadActivityCount} unread`}>
+                {unreadActivityCount > 99 ? "99+" : unreadActivityCount}
+              </span>
+            )}
+          </strong>
+          <div>
+            <button
+              type="button"
+              onClick={() =>
+                setActivityNotifications(markActivityNotificationsRead)
+              }
+              disabled={unreadActivityCount === 0}
+            >
+              Mark all read
+            </button>
+            <button
+              type="button"
+              onClick={() => setActivityNotifications([])}
+              disabled={activityNotifications.length === 0}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+        {activityNotifications.length === 0 ? (
+          <p className="chat-empty">No recent activity.</p>
+        ) : (
+          <ul className="activity-list" aria-live="polite">
+            {activityNotifications.map((notification) => (
+              <li
+                className={notification.read ? "activity-read" : "activity-unread"}
+                key={notification.id}
+              >
+                <span>{notification.message}</span>
+                <span className="activity-details">
+                  {notification.room}
+                  <time dateTime={notification.timestamp}>
+                    {new Date(notification.timestamp).toLocaleTimeString([], {
+                      hour: "numeric",
+                      minute: "2-digit",
+                    })}
+                  </time>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
       {roomError && <p className="room-error" role="alert">{roomError}</p>}
 
       <section className="audio-panel">
