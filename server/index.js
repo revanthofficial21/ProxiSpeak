@@ -16,16 +16,33 @@ const {
   DEFAULT_ROOM,
   normalizeRoomName,
   roomChannel,
-  getPlayersInRoom,
+  getPlayersInRoom: getPlayersInNamedRoom,
 } = require("./lib/rooms");
+const {
+  DEFAULT_ROOM_ID,
+  getRoomChannel,
+  emitConnectedPlayerCount,
+  emitToRoom,
+  emitRoomPresence,
+  emitPlayerLeft,
+} = require("./roomUtils");
+const { registerRoomHandler } = require("./roomHandler");
+const {
+  registerChatHandlers,
+  sendRoomChatHistory,
+} = require("./chat");
+const { registerChatTypingHandlers } = require("./chatTyping");
 const {
   canJoinMeetingCall,
   getMeetingCallParticipants,
   canRelayWebRtcSignal,
 } = require("./lib/meeting-call");
-const { createChatMessage } = require("./lib/chat");
 const { createRateLimiter } = require("./lib/rate-limit");
-const { registerScreenShareHandlers } = require("./lib/screen-share");
+const {
+  registerScreenShareHandlers,
+  stopActiveScreenShare,
+  removeScreenViewer,
+} = require("./lib/screen-share");
 const {
   initializeLayouts,
   getLayout,
@@ -63,8 +80,7 @@ const corsOrigin = allowedOrigins.includes("*") ? true : allowedOrigins;
 app.use(cors({ origin: corsOrigin }));
 app.use(express.json());
 
-// The room catalog. This is a list only — players are not yet scoped to a
-// room, so everyone still shares one world.
+// The room catalog also scopes layouts, presence, proximity, and chat.
 app.get("/api/rooms", (req, res) => {
   res.json({ rooms: availableRooms });
 });
@@ -154,7 +170,19 @@ function publicPlayer(player) {
     status: player.status || "",
     x: player.x,
     y: player.y,
+    roomId: player.roomId || DEFAULT_ROOM_ID,
   };
+}
+
+function roomNameForId(roomId) {
+  return availableRooms.find((room) => room.id === roomId)?.name || DEFAULT_ROOM;
+}
+
+function roomIdForName(roomName) {
+  return (
+    availableRooms.find((room) => room.name === roomName)?.id ||
+    DEFAULT_ROOM_ID
+  );
 }
 
 // Relay a WebRTC signal to a peer, but only when the two are in the same space
@@ -188,6 +216,7 @@ async function syncProximity(socketId, player) {
     .find({
       socketId: { $ne: socketId },
       connected: true,
+      roomId: player.roomId,
       location: {
         $near: [player.x, player.y],
         $maxDistance: PROXIMITY_LEAVE_RADIUS,
@@ -201,7 +230,7 @@ async function syncProximity(socketId, player) {
   const candidates = nearbyPlayers
     .filter((nearbyPlayer) => {
       const peer = players.get(nearbyPlayer.socketId);
-      return peer && peer.room === player.room;
+      return peer && peer.roomId === player.roomId;
     })
     .map((nearbyPlayer) => ({
       id: nearbyPlayer.socketId,
@@ -271,11 +300,15 @@ io.on("connection", (socket) => {
     avatarColor: DEFAULT_AVATAR_COLOR,
     status: "",
     room: DEFAULT_ROOM,
+    roomId: roomIdForName(DEFAULT_ROOM),
+    presenceAnnounced: false,
     ...spawnPosition,
   };
 
   players.set(socket.id, player);
   socket.join(roomChannel(player.room));
+  socket.join(getRoomChannel(player.roomId));
+  emitConnectedPlayerCount(io, players);
 
   // Save the player's initial position.
   markPlayerConnected(db.collection("players"), player)
@@ -284,12 +317,68 @@ io.on("connection", (socket) => {
       console.error("Failed to save player:", error.message);
     });
 
-  socket.emit("world:state", Array.from(players.values()));
+  socket.emit(
+    "world:state",
+    getPlayersInNamedRoom(players, player.room).map(publicPlayer)
+  );
   socket.emit("room:state", {
     room: player.room,
-    players: getPlayersInRoom(players, player.room).map(publicPlayer),
+    players: getPlayersInNamedRoom(players, player.room).map(publicPlayer),
   });
-  socket.broadcast.emit("player:joined", player);
+  socket.to(roomChannel(player.room)).emit("player:joined", publicPlayer(player));
+
+  const clearChatTyping = registerChatTypingHandlers(socket, { players, io });
+  registerChatHandlers(socket, {
+    db,
+    players,
+    io,
+    onMessageSending: clearChatTyping,
+    canSendMessage: () => chatLimiter.take(socket.id),
+  });
+  registerRoomHandler(socket, {
+    availableRooms,
+    players,
+    db,
+    io,
+    publicPlayer,
+    onRoomLeaving: async (socketId, previousRoomId) => {
+      clearChatTyping();
+      const wasInMeetingCall = meetingCallParticipants.has(socketId);
+      meetingCallParticipants.delete(socketId);
+      const previousRoomName = roomNameForId(previousRoomId);
+      if (previousRoomName === "Meeting Room") {
+        stopActiveScreenShare(socketId, activeShares, io, "room-left");
+      }
+      removeScreenViewer(socketId, activeShares, io);
+      if (wasInMeetingCall) {
+        io.to(roomChannel(previousRoomName)).emit(
+          "meeting:participant-left",
+          socketId
+        );
+      }
+      if (previousRoomName) socket.leave(roomChannel(previousRoomName));
+    },
+    onRoomChanged: async (socketId, previousRoomId, nextRoomId) => {
+      const currentPlayer = players.get(socketId);
+      if (!currentPlayer) return;
+      await socket.join(roomChannel(currentPlayer.room));
+
+      const nearby = proximityState.get(socketId) || new Set();
+      for (const peerId of nearby) {
+        io.to(socketId).emit("proximity:leave", peerId);
+        io.to(peerId).emit("proximity:leave", socketId);
+        const peerSet = proximityState.get(peerId);
+        if (peerSet) peerSet.delete(socketId);
+      }
+      proximityState.set(socketId, new Set());
+      await syncProximity(socketId, currentPlayer);
+      console.log(
+        `Player ${socketId} switched from ${previousRoomId} to ${nextRoomId}`
+      );
+    },
+    loadChatHistory: (roomId) =>
+      sendRoomChatHistory(socket, db, players, roomId),
+  });
 
   // WebRTC signaling — relayed only between players within proximity.
   socket.on("webrtc:offer", (data) => {
@@ -360,7 +449,12 @@ io.on("connection", (socket) => {
 
       const updatedPlayer = { ...currentPlayer, avatarColor: color };
       players.set(socket.id, updatedPlayer);
-      io.emit("player:avatarColorUpdated", publicPlayer(updatedPlayer));
+      emitToRoom(
+        io,
+        updatedPlayer.roomId,
+        "player:avatarColorUpdated",
+        publicPlayer(updatedPlayer)
+      );
 
       if (typeof callback === "function") {
         callback({ success: true, avatarColor: color });
@@ -434,13 +528,20 @@ io.on("connection", (socket) => {
           currentPlayer.status = returningPlayer.status;
         }
 
-        const restoredRoom = normalizeRoomName(returningPlayer.room);
-        if (restoredRoom && restoredRoom !== currentPlayer.room) {
-          // Move the socket into the restored space's channel.
-          const previousChannel = roomChannel(currentPlayer.room);
+        const restoredRoom =
+          normalizeRoomName(returningPlayer.room) ||
+          roomNameForId(returningPlayer.roomId);
+        const restoredRoomId =
+          availableRooms.find((room) => room.name === restoredRoom)?.id ||
+          DEFAULT_ROOM_ID;
+        if (restoredRoomId !== currentPlayer.roomId) {
+          const previousRoomId = currentPlayer.roomId;
+          await socket.leave(roomChannel(currentPlayer.room));
+          await socket.leave(getRoomChannel(previousRoomId));
           currentPlayer.room = restoredRoom;
-          socket.join(roomChannel(restoredRoom));
-          if (previousChannel) socket.leave(previousChannel);
+          currentPlayer.roomId = restoredRoomId;
+          await socket.join(roomChannel(restoredRoom));
+          await socket.join(getRoomChannel(restoredRoomId));
         }
       }
 
@@ -449,6 +550,10 @@ io.on("connection", (socket) => {
         {
           $set: {
             name: currentPlayer.name,
+            avatarColor: currentPlayer.avatarColor,
+            status: currentPlayer.status || "",
+            room: currentPlayer.room,
+            roomId: currentPlayer.roomId,
             x: currentPlayer.x,
             y: currentPlayer.y,
             location: [currentPlayer.x, currentPlayer.y],
@@ -472,7 +577,27 @@ io.on("connection", (socket) => {
       }
 
       players.set(socket.id, currentPlayer);
-      io.emit("player:renamed", currentPlayer);
+      emitToRoom(
+        io,
+        currentPlayer.roomId,
+        "player:renamed",
+        publicPlayer(currentPlayer)
+      );
+      if (!currentPlayer.presenceAnnounced) {
+        currentPlayer.presenceAnnounced = true;
+        emitRoomPresence(
+          io,
+          currentPlayer.roomId,
+          currentPlayer,
+          "joined",
+          socket
+        );
+      }
+      socket.emit(
+        "world:state",
+        getPlayersInNamedRoom(players, currentPlayer.room).map(publicPlayer)
+      );
+      await syncProximity(socket.id, currentPlayer);
 
       if (typeof callback === "function") {
         callback({
@@ -529,6 +654,7 @@ io.on("connection", (socket) => {
             name: updatedPlayer.name,
             status: updatedPlayer.status || "",
             room: updatedPlayer.room,
+            roomId: updatedPlayer.roomId,
             x: updatedPlayer.x,
             y: updatedPlayer.y,
             location: [updatedPlayer.x, updatedPlayer.y],
@@ -542,7 +668,12 @@ io.on("connection", (socket) => {
         { upsert: true }
       );
 
-      io.emit("player:moved", updatedPlayer);
+      emitToRoom(
+        io,
+        updatedPlayer.roomId,
+        "player:moved",
+        publicPlayer(updatedPlayer)
+      );
 
       // Group users by proximity and report to both sides.
       const nearbyCount = await syncProximity(socket.id, updatedPlayer);
@@ -560,112 +691,6 @@ io.on("connection", (socket) => {
     } catch (error) {
       console.error(
         "Failed to update position/find nearby players:",
-        error.message
-      );
-    }
-  });
-
-  // World chat — broadcast a message to everyone in the world.
-  socket.on("chat:send", (text, callback) => {
-    if (!chatLimiter.take(socket.id)) {
-      if (typeof callback === "function") {
-        callback({ success: false, error: "Slow down — too many messages" });
-      }
-      return;
-    }
-
-    const sender = players.get(socket.id);
-    const base = createChatMessage(sender, text, `${socket.id}-${Date.now()}`);
-
-    if (!base) {
-      if (typeof callback === "function") {
-        callback({
-          success: false,
-          error: "Message must be 1 to 500 characters",
-        });
-      }
-      return;
-    }
-
-    const message = {
-      ...base,
-      senderId: socket.id,
-      avatarColor: sender.avatarColor || DEFAULT_AVATAR_COLOR,
-      room: sender.room,
-      sentAt: new Date().toISOString(),
-    };
-
-    // Chat is scoped to the sender's space. Guard the channel: roomChannel()
-    // returns null for an unknown room, and io.to(null) would silently drop it.
-    const channel = roomChannel(sender.room);
-    if (!channel) {
-      if (typeof callback === "function") {
-        callback({ success: false, error: "You are not in a valid space" });
-      }
-      return;
-    }
-
-    io.to(channel).emit("chat:message", message);
-
-    if (typeof callback === "function") {
-      callback({ success: true });
-    }
-  });
-
-  // Move to another space. Only people in the same space hear each other.
-  socket.on("player:joinRoom", async (requestedRoom, callback) => {
-    const reply = (response) => {
-      if (typeof callback === "function") callback(response);
-    };
-
-    const currentPlayer = players.get(socket.id);
-    const roomName = normalizeRoomName(requestedRoom);
-
-    if (!roomName) {
-      reply({ success: false, error: "Unknown space" });
-      return;
-    }
-    if (!currentPlayer) {
-      reply({ success: false, error: "Player not found" });
-      return;
-    }
-    if (currentPlayer.room === roomName) {
-      reply({ success: true, room: roomName });
-      return;
-    }
-
-    const previousChannel = roomChannel(currentPlayer.room);
-    const nextChannel = roomChannel(roomName);
-
-    await socket.join(nextChannel);
-    meetingCallParticipants.delete(socket.id);
-    await socket.leave(previousChannel);
-
-    // Drop proximity to everyone in the old space.
-    const nearSet = proximityState.get(socket.id);
-    if (nearSet) {
-      for (const peerId of nearSet) {
-        io.to(peerId).emit("proximity:leave", socket.id);
-        const peerSet = proximityState.get(peerId);
-        if (peerSet) peerSet.delete(socket.id);
-      }
-      proximityState.delete(socket.id);
-    }
-
-    currentPlayer.room = roomName;
-    players.set(socket.id, currentPlayer);
-
-    socket.emit("room:state", {
-      room: roomName,
-      players: getPlayersInRoom(players, roomName).map(publicPlayer),
-    });
-    reply({ success: true, room: roomName });
-
-    try {
-      await syncProximity(socket.id, currentPlayer);
-    } catch (error) {
-      console.error(
-        "Failed to update proximity after room switch:",
         error.message
       );
     }
@@ -715,7 +740,7 @@ io.on("connection", (socket) => {
   });
 
   // A short status line shown on the profile and in the people list.
-  socket.on("player:setStatus", (status, callback) => {
+  socket.on("player:setStatus", async (status, callback) => {
     const reply = (response) => {
       if (typeof callback === "function") callback(response);
     };
@@ -729,11 +754,27 @@ io.on("connection", (socket) => {
     const nextStatus =
       typeof status === "string" ? status.trim().slice(0, 80) : "";
 
-    currentPlayer.status = nextStatus;
-    players.set(socket.id, currentPlayer);
+    try {
+      const result = await db.collection("players").updateOne(
+        { socketId: socket.id, connected: true },
+        { $set: { status: nextStatus, updatedAt: new Date() } }
+      );
+      if (result.matchedCount === 0) {
+        reply({ success: false, error: "Player record not found" });
+        return;
+      }
 
-    io.emit("player:status", { id: socket.id, status: nextStatus });
-    reply({ success: true, status: nextStatus });
+      currentPlayer.status = nextStatus;
+      players.set(socket.id, currentPlayer);
+      io.to(getRoomChannel(currentPlayer.roomId)).emit("player:status", {
+        id: socket.id,
+        status: nextStatus,
+      });
+      reply({ success: true, status: nextStatus });
+    } catch (error) {
+      console.error("Failed to save player status:", error.message);
+      reply({ success: false, error: "Could not save your status." });
+    }
   });
 
   // Screen sharing — Meeting Room only, with its own signaling handlers.
@@ -741,6 +782,8 @@ io.on("connection", (socket) => {
 
   // Mark the player disconnected.
   socket.on("disconnect", () => {
+    const disconnectedPlayer = players.get(socket.id);
+    const wasInMeetingCall = meetingCallParticipants.has(socket.id);
     meetingCallParticipants.delete(socket.id);
     players.delete(socket.id);
     spawnSlots.delete(socket.id);
@@ -765,7 +808,16 @@ io.on("connection", (socket) => {
       }
     );
 
-    io.emit("player:left", socket.id);
+    if (disconnectedPlayer) {
+      if (wasInMeetingCall) {
+        io.to(roomChannel(disconnectedPlayer.room)).emit(
+          "meeting:participant-left",
+          socket.id
+        );
+      }
+      emitPlayerLeft(io, disconnectedPlayer);
+    }
+    emitConnectedPlayerCount(io, players);
     console.log(`Player disconnected: ${socket.id}`);
   });
 });

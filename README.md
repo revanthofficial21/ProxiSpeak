@@ -132,21 +132,32 @@ The `players` collection (MongoDB):
 
 | Event | Payload |
 |---|---|
+| `room:join` | Room ID; callback returns success/error |
 | `player:setName` | `name` |
+| `player:setStatus` / `player:setAvatarColor` | Profile status / avatar colour |
 | `player:move` | `{ x, y }` |
-| `webrtc:offer` | `{ to, sdp }` |
-| `webrtc:answer` | `{ to, sdp }` |
-| `webrtc:ice` | `{ to, candidate }` |
+| `chat:send` | Message text, unique client message ID, callback |
+| `chat:typing` | `{ isTyping }` — never includes message text |
+| `webrtc:offer` / `webrtc:answer` / `webrtc:ice` | Target peer and signal |
 
 **Server → Client**
 
 | Event | Payload |
 |---|---|
+| `players:count` | Global connected-player count |
+| `room:presence` | Room-scoped join/leave notification |
+| `chat:history` / `chat:message` | Persisted room history / room message |
+| `chat:typing` | Room-scoped typing status |
 | `world:state` | array of players |
 | `player:joined` / `player:moved` / `player:left` | player / id |
 | `player:renamed` | player |
 | `player:nearby` | array of nearby players |
 | `proximity:enter` / `proximity:leave` | peer / peer id |
+
+Room membership scopes player lists, proximity audio, chat history and
+notifications. Messages sent while another room is open update that room's
+unread badge; opening the room clears its count. Typing indicators are sent
+only to the active room and expire after two seconds of inactivity.
 
 ## 9. Getting Started
 
@@ -192,7 +203,7 @@ microphone** in each, and move the avatars within 100px to connect.
 | **root** | `npm run audit` / `audit:local` | Spatial audit (MongoDB / no MongoDB) |
 | `server` | `npm run dev` | Start backend with nodemon |
 | `server` | `npm start` | Start backend |
-| `server` | `npm test` | Run all 6 server test suites |
+| `server` | `npm test` | Run all server test suites |
 | `server` | `npm run audit` | Spatial audit against MongoDB |
 | `server` | `npm run audit:local` | Spatial benchmark — no MongoDB needed |
 | `client` | `npm run dev` | Start the Vite dev server |

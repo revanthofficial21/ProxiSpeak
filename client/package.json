@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test": "node --test src/unreadMessages.test.js",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "node tests/run.cjs && node src/occlusion.test.js"

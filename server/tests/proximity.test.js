@@ -2,6 +2,7 @@ const {
   getDistance,
   getNearbyPlayers,
   DEFAULT_PROXIMITY_RADIUS,
+  PROXIMITY_RADIUS,
 } = require("../lib/proximity");
 
 // Pure-JS proximity oracle: the in-memory logic here mirrors what the
@@ -24,6 +25,7 @@ const playerB = { id: "B", x: 160, y: 120 };
 const playerC = { id: "C", x: 250, y: 100 };
 
 check("default radius is 100px", DEFAULT_PROXIMITY_RADIUS === 100);
+check("legacy radius export is retained", PROXIMITY_RADIUS === 100);
 check(
   "distance A->B is ~63.25",
   Math.abs(getDistance(playerA, playerB) - 63.25) < 0.01
@@ -46,6 +48,12 @@ const edge = { id: "E", x: 200, y: 100 }; // exactly 100px from A
 check(
   "a player exactly 100px away counts as nearby",
   getNearbyPlayers([playerA, edge], playerA).length === 1
+);
+check(
+  "legacy Map-based proximity calls remain supported",
+  getNearbyPlayers(playerA, new Map([["A", playerA], ["B", playerB]])).some(
+    (player) => player.id === "B"
+  )
 );
 
 console.log(

@@ -7,12 +7,18 @@ function positionFields(x, y) {
 }
 
 function markPlayerConnected(collection, player) {
+  const optionalFields = {};
+  for (const field of ["room", "roomId", "avatarColor", "status"]) {
+    if (player[field] !== undefined) optionalFields[field] = player[field];
+  }
+
   return collection.updateOne(
     { socketId: player.socketId },
     {
       $set: {
         socketId: player.socketId,
         name: player.name,
+        ...optionalFields,
         ...positionFields(player.x, player.y),
         connected: true,
         updatedAt: new Date(),
@@ -40,7 +46,17 @@ function markPlayerDisconnected(collection, socketId) {
 async function findRestorablePlayer(collection, name, session) {
   const matches = await collection
     .find({ name }, session ? { session } : undefined)
-    .project({ _id: 1, socketId: 1, x: 1, y: 1, connected: 1 })
+    .project({
+      _id: 1,
+      socketId: 1,
+      x: 1,
+      y: 1,
+      connected: 1,
+      room: 1,
+      roomId: 1,
+      avatarColor: 1,
+      status: 1,
+    })
     .limit(2)
     .toArray();
 
@@ -86,6 +102,10 @@ async function restoreReturningPlayer(
       $set: {
         socketId,
         connected: true,
+        room: savedPlayer.room,
+        roomId: savedPlayer.roomId,
+        avatarColor: savedPlayer.avatarColor,
+        status: savedPlayer.status,
         ...positionFields(position.x, position.y),
         updatedAt: new Date(),
       },

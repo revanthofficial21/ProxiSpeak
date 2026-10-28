@@ -6,6 +6,15 @@ import useAudioDevices from "./useAudioDevices";
 import Landing from "./Landing";
 import { DEFAULT_LAYOUT, furnitureOf, zonesOf, plantsOf } from "./office";
 import useRoomLayout from "./useRoomLayout";
+import {
+  clearUnreadCount,
+  incrementUnreadCount,
+  recordUnreadMessage,
+} from "./unreadMessages";
+import {
+  formatTypingIndicator,
+  updateTypingUsers,
+} from "./typingIndicators";
 import "./App.css";
 
 const WORLD_WIDTH = 1000;
@@ -244,10 +253,15 @@ export default function App() {
   const canvasRef = useRef(null);
   const canvasWrapRef = useRef(null);
   const socketRef = useRef(null);
+  const chatLogRef = useRef(null);
   const keysRef = useRef({});
   const gameFocusedRef = useRef(false);
   const playersRef = useRef(new Map());
   const nearbyRef = useRef(new Set());
+  const activeRoomIdRef = useRef("");
+  const pendingChatRef = useRef(null);
+  const seenPresenceIdsRef = useRef(new Set());
+  const presenceTimersRef = useRef(new Map());
 
   const [showLanding, setShowLanding] = useState(true);
   const [activeView, setActiveView] = useState("office");
@@ -255,6 +269,7 @@ export default function App() {
   const [speakerDeviceId, setSpeakerDeviceId] = useState("");
   const [connected, setConnected] = useState(false);
   const [socket, setSocket] = useState(null);
+  const [connectedPlayerCount, setConnectedPlayerCount] = useState(0);
   const [players, setPlayers] = useState([]);
   const [nearbyPlayers, setNearbyPlayers] = useState([]);
   const [playerName, setPlayerName] = useState("");
@@ -265,14 +280,20 @@ export default function App() {
   const [savedStatus, setSavedStatus] = useState("");
   const [statusError, setStatusError] = useState("");
   const [messages, setMessages] = useState([]);
+  const [typingUsers, setTypingUsers] = useState({});
+  const [chatHistoryLoading, setChatHistoryLoading] = useState(true);
+  const [chatHistoryError, setChatHistoryError] = useState("");
   const [chatInput, setChatInput] = useState("");
   const [chatError, setChatError] = useState("");
+  const [unreadCounts, setUnreadCounts] = useState({});
+  const [presenceNotifications, setPresenceNotifications] = useState([]);
+  const [switchingRoom, setSwitchingRoom] = useState(false);
+  const [sendingChat, setSendingChat] = useState(false);
   const [rooms, setRooms] = useState([]);
   const [activeRoomId, setActiveRoomId] = useState("");
 
   // The room's furniture comes from the server; the built-in copy is the fallback.
-  const roomId =
-    rooms.find((room) => room.name === activeRoomId)?.id || "open-world";
+  const roomId = activeRoomId || "open-world";
   const { layout, layoutRef } = useRoomLayout(roomId);
   const [roomsError, setRoomsError] = useState("");
   const [roomError, setRoomError] = useState("");
@@ -312,14 +333,29 @@ export default function App() {
     const client = io(SERVER_URL);
     socketRef.current = client;
     setSocket(client);
+    const seenChatMessageIds = new Set();
+    const presenceTimers = presenceTimersRef.current;
 
     client.on("connect", () => setConnected(true));
     client.on("disconnect", () => {
       setConnected(false);
+      setConnectedPlayerCount(0);
+      setTypingUsers({});
       playersRef.current.clear();
       nearbyRef.current.clear();
       setPlayers([]);
       setNearbyPlayers([]);
+      setChatHistoryLoading(false);
+      for (const timer of presenceTimers.values()) {
+        window.clearTimeout(timer);
+      }
+      presenceTimers.clear();
+      setPresenceNotifications([]);
+    });
+    client.on("players:count", (count) => {
+      if (Number.isInteger(count) && count >= 0) {
+        setConnectedPlayerCount(count);
+      }
     });
     client.on("world:state", (list) => {
       if (!Array.isArray(list)) return;
@@ -328,7 +364,26 @@ export default function App() {
           .filter((player) => player && typeof player.id === "string")
           .map((player) => [player.id, player])
       );
-      setPlayers(Array.from(playersRef.current.values()));
+      const playerList = Array.from(playersRef.current.values());
+      setPlayers(playerList);
+      const ownPlayer = playerList.find((player) => player.id === client.id);
+      if (ownPlayer) {
+        setPlayerName(ownPlayer.name || "");
+        setSavedName(ownPlayer.name || "");
+        setStatus(ownPlayer.status || "");
+        setSavedStatus(ownPlayer.status || "");
+      }
+      if (typeof ownPlayer?.roomId === "string") {
+        activeRoomIdRef.current = ownPlayer.roomId;
+        setActiveRoomId(ownPlayer.roomId);
+        setUnreadCounts((current) =>
+          clearUnreadCount(current, ownPlayer.roomId)
+        );
+      }
+      setMessages([]);
+      setTypingUsers({});
+      setChatHistoryLoading(true);
+      setChatHistoryError("");
     });
     client.on("player:joined", (player) => {
       if (!player || typeof player.id !== "string") return;
@@ -353,6 +408,10 @@ export default function App() {
       }
 
       setPlayers(Array.from(playersRef.current.values()));
+      if (player.id === client.id) {
+        setPlayerName(player.name || "");
+        setSavedName(player.name || "");
+      }
     });
     client.on("player:avatarColorUpdated", (player) => {
       if (!player || typeof player.id !== "string") return;
@@ -410,13 +469,127 @@ export default function App() {
         current.filter((p) => p.id !== playerId)
       );
     });
-    client.on("chat:message", (message) => {
-      if (!message || typeof message.text !== "string") return;
-      setMessages((current) => [...current.slice(-199), message]);
+    client.on("room:presence", (notification) => {
+      if (
+        !notification ||
+        typeof notification.eventId !== "string" ||
+        typeof notification.roomId !== "string" ||
+        typeof notification.playerId !== "string" ||
+        typeof notification.displayName !== "string" ||
+        !notification.displayName.trim() ||
+        !["joined", "left"].includes(notification.action) ||
+        seenPresenceIdsRef.current.has(notification.eventId)
+      ) {
+        return;
+      }
+
+      seenPresenceIdsRef.current.add(notification.eventId);
+      if (seenPresenceIdsRef.current.size > 100) {
+        const oldestEventId = seenPresenceIdsRef.current.values().next().value;
+        seenPresenceIdsRef.current.delete(oldestEventId);
+      }
+
+      setPresenceNotifications((current) => [
+        ...current.slice(-2),
+        notification,
+      ]);
+      const timer = window.setTimeout(() => {
+        setPresenceNotifications((current) =>
+          current.filter((entry) => entry.eventId !== notification.eventId)
+        );
+        presenceTimersRef.current.delete(notification.eventId);
+      }, 5000);
+      presenceTimersRef.current.set(notification.eventId, timer);
     });
-    client.on("room:state", ({ room } = {}) => {
-      if (typeof room === "string") setActiveRoomId(room);
+    const handleChatMessage = (message) => {
+      const isUnread = recordUnreadMessage(
+        message,
+        activeRoomIdRef.current,
+        client.id,
+        seenChatMessageIds
+      );
+      if (isUnread) {
+        setUnreadCounts((current) =>
+          incrementUnreadCount(current, message.roomId)
+        );
+      }
+
+      if (
+        !message ||
+        typeof message.id !== "string" ||
+        typeof message.text !== "string" ||
+        typeof message.timestamp !== "string" ||
+        message.roomId !== activeRoomIdRef.current
+      ) {
+        return;
+      }
+      setMessages((current) =>
+        current.some((existing) => existing.id === message.id)
+          ? current
+          : [...current, message]
+      );
+    };
+    client.on("chat:message", handleChatMessage);
+    client.on("chat:history", (history) => {
+      if (!history || typeof history !== "object") return;
+      const { roomId: historyRoomId, messages: historyMessages } = history;
+      if (
+        historyRoomId !== activeRoomIdRef.current ||
+        !Array.isArray(historyMessages)
+      ) {
+        return;
+      }
+      const validMessages = historyMessages.filter(
+        (message) =>
+          message &&
+          typeof message.id === "string" &&
+          typeof message.senderId === "string" &&
+          message.roomId === historyRoomId &&
+          typeof message.text === "string" &&
+          typeof message.timestamp === "string"
+      );
+      setMessages((current) => {
+        const mergedMessages = new Map(
+          validMessages.map((message) => [message.id, message])
+        );
+        validMessages.forEach((message) => seenChatMessageIds.add(message.id));
+        current
+          .filter((message) => message.roomId === historyRoomId)
+          .forEach((message) => {
+            if (!mergedMessages.has(message.id)) {
+              mergedMessages.set(message.id, message);
+            }
+          });
+        return Array.from(mergedMessages.values()).sort(
+          (first, second) =>
+            new Date(first.timestamp).getTime() -
+            new Date(second.timestamp).getTime()
+        );
+      });
+      setChatHistoryLoading(false);
+      setChatHistoryError("");
     });
+    client.on("chat:history:error", (historyError) => {
+      if (!historyError || typeof historyError !== "object") return;
+      if (historyError.roomId !== activeRoomIdRef.current) return;
+      setChatHistoryLoading(false);
+      setChatHistoryError(
+        typeof historyError.error === "string"
+          ? historyError.error
+          : "Could not load chat history. Try switching rooms."
+      );
+    });
+    const handleChatTyping = (notification) => {
+      setTypingUsers((current) =>
+        updateTypingUsers(
+          current,
+          notification,
+          activeRoomIdRef.current,
+          client.id
+        )
+      );
+    };
+    client.on("chat:typing", handleChatTyping);
     client.on("meeting:participant-joined", (participant) => {
       if (!participant || typeof participant.id !== "string") return;
       setMeetingParticipants((current) =>
@@ -437,6 +610,10 @@ export default function App() {
       if (!existing) return;
       playersRef.current.set(id, { ...existing, status: nextStatus || "" });
       setPlayers(Array.from(playersRef.current.values()));
+      if (id === client.id) {
+        setStatus(nextStatus || "");
+        setSavedStatus(nextStatus || "");
+      }
       setNearbyPlayers((current) =>
         current.map((p) =>
           p.id === id ? { ...p, status: nextStatus || "" } : p
@@ -445,10 +622,21 @@ export default function App() {
     });
 
     return () => {
+      client.off("chat:message", handleChatMessage);
+      client.off("chat:typing", handleChatTyping);
       client.disconnect();
+      for (const timer of presenceTimers.values()) {
+        window.clearTimeout(timer);
+      }
+      presenceTimers.clear();
       socketRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const log = chatLogRef.current;
+    if (log) log.scrollTop = log.scrollHeight;
+  }, [messages]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -701,32 +889,68 @@ export default function App() {
       return;
     }
 
-    client.emit("chat:send", text, (response) => {
-      if (!response?.success) {
-        setChatError(response?.error || "Could not send your message.");
-        return;
+    setChatError("");
+    setSendingChat(true);
+    client.emit("chat:typing", { isTyping: false });
+    if (pendingChatRef.current?.text !== text) {
+      pendingChatRef.current = { text, id: crypto.randomUUID() };
+    }
+    const clientMessageId = pendingChatRef.current.id;
+    client.timeout(5000).emit(
+      "chat:send",
+      text,
+      clientMessageId,
+      (timeoutError, response) => {
+        setSendingChat(false);
+        if (timeoutError || !response?.success) {
+          setChatError(
+            response?.error || "Could not send your message. Try again."
+          );
+          return;
+        }
+        if (pendingChatRef.current?.id === clientMessageId) {
+          pendingChatRef.current = null;
+        }
+        setChatInput((current) => (current.trim() === text ? "" : current));
       }
-      setChatInput("");
-      setChatError("");
-    });
+    );
   };
 
-  const handleJoinRoom = (roomId) => {
+  const handleJoinRoom = (nextRoomId) => {
     const client = socketRef.current;
-    if (!client?.connected) {
-      setRoomError("Connect to the server before switching spaces.");
+    if (!client?.connected || switchingRoom || nextRoomId === activeRoomId) {
+      if (!client?.connected) {
+        setRoomError("Connect to the server before switching spaces.");
+      }
       return;
     }
 
-    client.emit("player:joinRoom", roomId, (response) => {
-      if (!response?.success) {
-        setRoomError(response?.error || "Could not switch space.");
-        return;
+    setSwitchingRoom(true);
+    setRoomError("");
+    setChatHistoryLoading(true);
+    setChatHistoryError("");
+    client.timeout(5000).emit(
+      "room:join",
+      nextRoomId,
+      (timeoutError, response) => {
+        setSwitchingRoom(false);
+        if (timeoutError || !response?.success) {
+          setChatHistoryLoading(false);
+          setRoomError(response?.error || "Could not switch spaces. Try again.");
+          return;
+        }
+        activeRoomIdRef.current = response.roomId;
+        setActiveRoomId(response.roomId);
+        setUnreadCounts((current) =>
+          clearUnreadCount(current, response.roomId)
+        );
+        setMessages([]);
+        setTypingUsers({});
+        setChatError("");
+        pendingChatRef.current = null;
+        setMeetingParticipants([]);
       }
-      setRoomError("");
-      setActiveRoomId(response.room);
-      setMeetingParticipants([]);
-    });
+    );
   };
 
   const handleMeetingJoin = () => {
@@ -778,6 +1002,11 @@ export default function App() {
             ? current
             : list[0]?.id || ""
         );
+        activeRoomIdRef.current = list.some(
+          (room) => room.id === activeRoomIdRef.current
+        )
+          ? activeRoomIdRef.current
+          : list[0]?.id || "";
       } catch (error) {
         if (!cancelled) setRoomsError(error.message);
       }
@@ -856,7 +1085,7 @@ export default function App() {
         </div>
         <div className="topbar-actions">
           <span className="online-count">
-            {players.length} online
+            {connectedPlayerCount} online
           </span>
           <button
             type="button"
@@ -877,12 +1106,23 @@ export default function App() {
           </p>
         </div>
         <div className="player-count">
-          <span className="count-number">{players.length}</span>
+          <span className="count-number">{connectedPlayerCount}</span>
           <span className="count-label">
-            Connected player{players.length === 1 ? "" : "s"}
+            Connected player{connectedPlayerCount === 1 ? "" : "s"}
           </span>
         </div>
       </section>
+
+      <div className="presence-notifications" aria-label="Room activity">
+        {presenceNotifications
+          .filter((notification) => notification.roomId === activeRoomId)
+          .map((notification) => (
+            <p className="presence-toast" key={notification.eventId} role="status">
+              <strong>{notification.displayName}</strong>{" "}
+              {notification.action === "joined" ? "joined the room" : "left the room"}
+            </p>
+          ))}
+      </div>
 
       <section className="name-panel" data-panel="settings">
         <div className="profile-preview">
@@ -955,7 +1195,7 @@ export default function App() {
         <div className="world-toolbar">
           <div>
             <span className="live-dot" />
-            <strong>Open World</strong>
+            <strong>{activeRoom?.name || "Open World"}</strong>
             <span className="world-subtitle"> · 2D proximity space</span>
           </div>
           <span className="coordinate-label">1000 × 600</span>
@@ -1190,19 +1430,26 @@ export default function App() {
           <div className="rooms-grid">
             {rooms.map((room) => {
               const here = players.filter(
-                (player) => player.room === room.name
+                (player) => player.roomId === room.id
               ).length;
               const hue = (room.name.length * 47) % 360;
+              const unreadCount = unreadCounts[room.id] || 0;
 
               return (
                 <button
                   key={room.id}
                   type="button"
                   className={`room-card${
-                    room.name === activeRoomId ? " is-selected" : ""
+                    room.id === activeRoomId ? " is-selected" : ""
                   }`}
-                  aria-pressed={room.name === activeRoomId}
-                  onClick={() => handleJoinRoom(room.name)}
+                  aria-pressed={room.id === activeRoomId}
+                  aria-label={
+                    unreadCount > 0
+                      ? `${room.name}, ${unreadCount} unread messages`
+                      : room.name
+                  }
+                  disabled={!connected || switchingRoom}
+                  onClick={() => handleJoinRoom(room.id)}
                 >
                   <span
                     className="room-card-thumb"
@@ -1214,7 +1461,20 @@ export default function App() {
                     }}
                   />
                   <span className="room-card-body">
-                    <strong>{room.name}</strong>
+                    <span
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      <strong>{room.name}</strong>
+                      {unreadCount > 0 && (
+                        <span className="room-unread-badge" aria-hidden="true">
+                          {unreadCount > 99 ? "99+" : unreadCount}
+                        </span>
+                      )}
+                    </span>
                     <span className="room-card-count">
                       {here} {here === 1 ? "person" : "people"}
                     </span>
@@ -1224,7 +1484,7 @@ export default function App() {
             })}
           </div>
         )}
-        {activeRoomId === "Meeting Room" && (
+        {activeRoomId === "meeting-room" && (
           <div className="rooms-list">
             <button type="button" className="room-button" onClick={handleMeetingJoin}>
               Join call
@@ -1245,7 +1505,7 @@ export default function App() {
         </p>
       </section>
 
-      {activeRoomId === "Meeting Room" && (
+      {activeRoomId === "meeting-room" && (
         <section className="screen-share-panel" data-panel="rooms">
           <div className="screen-share-header">
             <div>
@@ -1290,9 +1550,13 @@ export default function App() {
       )}
 
       <section className="chat-panel" data-panel="chat">
-        <h2>World chat</h2>
-        <ul className="chat-log">
-          {messages.length === 0 ? (
+        <h2>{activeRoom?.name || "Room"} chat</h2>
+        <ul className="chat-log" ref={chatLogRef}>
+          {chatHistoryLoading ? (
+            <li className="chat-empty">Loading chat history…</li>
+          ) : chatHistoryError ? (
+            <li className="chat-empty" role="alert">{chatHistoryError}</li>
+          ) : messages.length === 0 ? (
             <li className="chat-empty">No messages yet.</li>
           ) : (
             messages.map((message) => (
@@ -1306,7 +1570,9 @@ export default function App() {
                   aria-hidden="true"
                 />
                 <span className="chat-body">
-                  <span className="chat-sender">{message.senderName}</span>
+                  <span className="chat-sender">
+                    {message.name || `Player ${message.senderId?.slice(0, 4)}`}
+                  </span>
                   <span className="chat-text">{message.text}</span>
                 </span>
               </li>
@@ -1314,16 +1580,32 @@ export default function App() {
           )}
         </ul>
         <form className="chat-compose" onSubmit={handleSendChat}>
-          <input
-            type="text"
+          <textarea
             value={chatInput}
             placeholder="Type a message…"
             maxLength={500}
-            onChange={(event) => setChatInput(event.target.value)}
+            rows={2}
+            aria-label="Write a room chat message"
+            disabled={!connected || sendingChat || switchingRoom}
+            onChange={(event) => {
+              setChatInput(event.target.value);
+              socketRef.current?.emit("chat:typing", {
+                isTyping: Boolean(event.target.value.trim()),
+              });
+              if (chatError) setChatError("");
+            }}
           />
-          <button type="submit" disabled={!connected}>
-            Send
-          </button>
+          {formatTypingIndicator(typingUsers) && (
+            <p className="chat-typing-indicator" role="status">
+              {formatTypingIndicator(typingUsers)}
+            </p>
+          )}
+          <div className="chat-compose-footer">
+            <span>{chatInput.length}/500</span>
+            <button type="submit" disabled={!connected || sendingChat || switchingRoom || !chatInput.trim()}>
+              {sendingChat ? "Sending…" : "Send"}
+            </button>
+          </div>
         </form>
         {chatError && <p className="panel-error">{chatError}</p>}
       </section>

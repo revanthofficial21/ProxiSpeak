@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+const MEETING_ROOM_ID = "meeting-room";
+const MEETING_ROOM_NAME = "Meeting Room";
 
 // Optional TURN relay — same env config as the voice hook.
 const turnUrl = import.meta.env.VITE_TURN_URL;
@@ -11,8 +13,6 @@ if (turnUrl) {
     credential: import.meta.env.VITE_TURN_CREDENTIAL,
   });
 }
-const MEETING_ROOM = "Meeting Room";
-
 // Short browser description for on-screen diagnostics; the full UA goes to the
 // console. Screen capture support varies enough between builds that this matters.
 function describeBrowser() {
@@ -117,7 +117,7 @@ export default function useScreenShare(socket, activeRoomId) {
       if (
         !stream ||
         !socket?.connected ||
-        roomRef.current !== MEETING_ROOM ||
+        roomRef.current !== MEETING_ROOM_ID ||
         peersRef.current.has(peerKey)
       ) {
         return;
@@ -160,7 +160,7 @@ export default function useScreenShare(socket, activeRoomId) {
   );
 
   const startScreenShare = useCallback(async () => {
-    if (activeRoomId !== MEETING_ROOM) return;
+    if (activeRoomId !== MEETING_ROOM_ID) return;
     if (!socket?.connected) {
       setScreenShareError("Connect to the server before sharing your screen.");
       return;
@@ -224,7 +224,7 @@ export default function useScreenShare(socket, activeRoomId) {
       if (!stream) {
         throw lastError || new Error("Screen capture is unavailable");
       }
-      if (roomRef.current !== MEETING_ROOM || !socket.connected) {
+      if (roomRef.current !== MEETING_ROOM_ID || !socket.connected) {
         stream.getTracks().forEach((track) => track.stop());
         setStartingShare(false);
         return;
@@ -281,7 +281,7 @@ export default function useScreenShare(socket, activeRoomId) {
 
   useEffect(() => {
     roomRef.current = activeRoomId;
-    if (activeRoomId === MEETING_ROOM) return;
+    if (activeRoomId === MEETING_ROOM_ID) return;
 
     if (localStreamRef.current) stopLocalShare();
     for (const peerId of peersRef.current.keys()) closePeer(peerId);
@@ -292,7 +292,7 @@ export default function useScreenShare(socket, activeRoomId) {
   }, [activeRoomId, socket, closePeer, stopLocalShare]);
 
   useEffect(() => {
-    if (activeRoomId === MEETING_ROOM && socket?.connected) {
+    if (activeRoomId === MEETING_ROOM_ID && socket?.connected) {
       socket.emit("screen:list");
     }
   }, [activeRoomId, socket]);
@@ -315,7 +315,7 @@ export default function useScreenShare(socket, activeRoomId) {
 
     // The server sends `room` (main's room name), not `roomId`.
     const onList = ({ room, shares } = {}) => {
-      if (room !== MEETING_ROOM || roomRef.current !== MEETING_ROOM) {
+      if (room !== MEETING_ROOM_NAME || roomRef.current !== MEETING_ROOM_ID) {
         return;
       }
       const validShares = Array.isArray(shares)
@@ -337,7 +337,7 @@ export default function useScreenShare(socket, activeRoomId) {
     };
 
     const onAvailable = ({ sharerId, name } = {}) => {
-      if (roomRef.current === MEETING_ROOM) setSharer(sharerId, name);
+      if (roomRef.current === MEETING_ROOM_ID) setSharer(sharerId, name);
     };
 
     const onViewer = ({ viewerId } = {}) => {
@@ -348,7 +348,7 @@ export default function useScreenShare(socket, activeRoomId) {
       if (
         !fromId ||
         !offer ||
-        roomRef.current !== MEETING_ROOM ||
+        roomRef.current !== MEETING_ROOM_ID ||
         !sharersRef.current.has(fromId)
       ) {
         return;
@@ -442,7 +442,7 @@ export default function useScreenShare(socket, activeRoomId) {
     };
 
     const onConnect = () => {
-      if (roomRef.current === MEETING_ROOM) socket.emit("screen:list");
+      if (roomRef.current === MEETING_ROOM_ID) socket.emit("screen:list");
     };
     const onDisconnect = () => {
       stopLocalShare({ notify: false });
