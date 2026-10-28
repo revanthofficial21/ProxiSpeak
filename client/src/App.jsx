@@ -939,7 +939,17 @@ export default function App() {
             <span className="key">D</span>
             <span className="controls-label">or arrow keys to move</span>
           </div>
-          <span className="footer-note">Multiplayer movement prototype</span>
+          <div className="ring-legend" aria-label="Proximity ring legend">
+            <span>
+              <i className="ring-swatch is-close" /> Close · loud
+            </span>
+            <span>
+              <i className="ring-swatch is-medium" /> Medium
+            </span>
+            <span>
+              <i className="ring-swatch is-far" /> Far · quiet
+            </span>
+          </div>
         </div>
       </section>
 
@@ -1099,6 +1109,28 @@ export default function App() {
                     <span className="people-status">{player.status}</span>
                   ) : null}
                 </span>
+                <span className="people-badges">
+                  {(player.id === socket?.id
+                    ? micLevel
+                    : peerLevels[player.id] || 0) > 0.12 && (
+                    <span
+                      className="badge badge-speaking"
+                      title="Speaking"
+                      aria-label="Speaking"
+                    />
+                  )}
+                  {screenShares.some(
+                    (share) => share.sharerId === player.id
+                  ) && (
+                    <span
+                      className="badge badge-sharing"
+                      title="Sharing screen"
+                      aria-label="Sharing screen"
+                    >
+                      ▭
+                    </span>
+                  )}
+                </span>
               </li>
             ))}
           </ul>
@@ -1112,20 +1144,41 @@ export default function App() {
         ) : rooms.length === 0 ? (
           <p className="panel-empty">Loading spaces…</p>
         ) : (
-          <div className="rooms-list">
-            {rooms.map((room) => (
-              <button
-                key={room.id}
-                type="button"
-                className={`room-button${
-                  room.name === activeRoomId ? " selected" : ""
-                }`}
-                aria-pressed={room.name === activeRoomId}
-                onClick={() => handleJoinRoom(room.name)}
-              >
-                {room.name}
-              </button>
-            ))}
+          <div className="rooms-grid">
+            {rooms.map((room) => {
+              const here = players.filter(
+                (player) => player.room === room.name
+              ).length;
+              const hue = (room.name.length * 47) % 360;
+
+              return (
+                <button
+                  key={room.id}
+                  type="button"
+                  className={`room-card${
+                    room.name === activeRoomId ? " is-selected" : ""
+                  }`}
+                  aria-pressed={room.name === activeRoomId}
+                  onClick={() => handleJoinRoom(room.name)}
+                >
+                  <span
+                    className="room-card-thumb"
+                    aria-hidden="true"
+                    style={{
+                      background: `linear-gradient(135deg, hsl(${hue} 55% 26%), hsl(${
+                        hue + 30
+                      } 50% 15%))`,
+                    }}
+                  />
+                  <span className="room-card-body">
+                    <strong>{room.name}</strong>
+                    <span className="room-card-count">
+                      {here} {here === 1 ? "person" : "people"}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
         )}
         {activeRoomId === "Meeting Room" && (
