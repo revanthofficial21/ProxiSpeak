@@ -69,7 +69,13 @@ async function sendRoomChatHistory(socket, db, players, roomId) {
   }
 }
 
-function registerChatHandlers(socket, { db, players, io, onMessageSending }) {
+function registerChatHandlers(socket, {
+  db,
+  players,
+  io,
+  onMessageSending,
+  canSendMessage,
+}) {
   socket.on("chat:send", async (messageText, clientMessageId, callback) => {
     const respond = (result) => {
       if (typeof callback === "function") callback(result);
@@ -92,6 +98,10 @@ function registerChatHandlers(socket, { db, players, io, onMessageSending }) {
     const sender = players.get(socket.id);
     if (!sender) {
       respond({ success: false, error: "Player not found." });
+      return;
+    }
+    if (typeof canSendMessage === "function" && !canSendMessage()) {
+      respond({ success: false, error: "Slow down — too many messages." });
       return;
     }
 

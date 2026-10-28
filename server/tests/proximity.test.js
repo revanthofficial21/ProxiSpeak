@@ -3,7 +3,7 @@ const {
   getNearbyPlayers,
   DEFAULT_PROXIMITY_RADIUS,
   PROXIMITY_RADIUS,
-} = require("./proximity");
+} = require("../lib/proximity");
 
 // Pure-JS proximity oracle: the in-memory logic here mirrors what the
 // MongoDB $near query in index.js must return. Kept as a reference so the

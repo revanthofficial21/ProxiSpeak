@@ -38,11 +38,22 @@ function registerRoomHandler(socket, {
       respond({ success: true, roomId });
       return;
     }
+    const nextRoom = availableRooms.find((room) => room.id === roomId);
+    if (!nextRoom) {
+      respond({ success: false, error: "Invalid room selection." });
+      return;
+    }
 
     try {
       const result = await db.collection("players").updateOne(
         { socketId: socket.id, connected: true },
-        { $set: { roomId, updatedAt: new Date() } }
+        {
+          $set: {
+            roomId,
+            room: nextRoom.name,
+            updatedAt: new Date(),
+          },
+        }
       );
       if (result.matchedCount === 0) {
         respond({ success: false, error: "Player record not found." });
@@ -59,7 +70,7 @@ function registerRoomHandler(socket, {
       socket.leave(getRoomChannel(previousRoomId));
       emitPlayerLeft(io, { ...currentPlayer, roomId: previousRoomId });
 
-      const updatedPlayer = { ...currentPlayer, roomId };
+      const updatedPlayer = { ...currentPlayer, roomId, room: nextRoom.name };
       players.set(socket.id, updatedPlayer);
       await socket.join(getRoomChannel(roomId));
 

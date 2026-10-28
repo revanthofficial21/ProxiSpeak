@@ -2,6 +2,40 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 const MEETING_ROOM_ID = "meeting-room";
+const MEETING_ROOM_NAME = "Meeting Room";
+
+// Optional TURN relay — same env config as the voice hook.
+const turnUrl = import.meta.env.VITE_TURN_URL;
+if (turnUrl) {
+  ICE_SERVERS.push({
+    urls: turnUrl,
+    username: import.meta.env.VITE_TURN_USERNAME,
+    credential: import.meta.env.VITE_TURN_CREDENTIAL,
+  });
+}
+// Short browser description for on-screen diagnostics; the full UA goes to the
+// console. Screen capture support varies enough between builds that this matters.
+function describeBrowser() {
+  const ua = navigator.userAgent;
+  const version = (pattern) => {
+    const match = ua.match(pattern);
+    return match ? match[1].split(".")[0] : "";
+  };
+
+  // Edge and Opera both carry "Chrome/" in their UA, so test them first.
+  if (/Edg\//.test(ua)) return `Edge ${version(/Edg\/([\d.]+)/)}`.trim();
+  if (/OPR\//.test(ua)) return `Opera ${version(/OPR\/([\d.]+)/)}`.trim();
+  if (/Firefox\//.test(ua)) return `Firefox ${version(/Firefox\/([\d.]+)/)}`.trim();
+  if (/Chrome\//.test(ua)) return `Chrome ${version(/Chrome\/([\d.]+)/)}`.trim();
+  if (/Safari\//.test(ua)) return `Safari ${version(/Version\/([\d.]+)/)}`.trim();
+  return "unknown browser";
+}
+
+// An embedded Chromium — VS Code's built-in preview, an Electron shell — reports
+// itself as Chrome and is a secure context, but cannot capture the screen.
+function isEmbeddedPreview() {
+  return /Electron|vscode|Code\/\d|HeadlessChrome/i.test(navigator.userAgent);
+}
 
 export default function useScreenShare(socket, activeRoomId) {
   const [isSharing, setIsSharing] = useState(false);
@@ -134,7 +168,24 @@ export default function useScreenShare(socket, activeRoomId) {
     if (localStreamRef.current || startingShare) return;
     const getDisplayMedia = navigator.mediaDevices?.getDisplayMedia;
     if (typeof getDisplayMedia !== "function") {
-      setScreenShareError("Screen sharing is not supported in this browser.");
+      setScreenShareError(
+        `Screen sharing is not supported in this browser (${describeBrowser()}).`
+      );
+      return;
+    }
+
+    if (!window.isSecureContext) {
+      setScreenShareError(
+        "Screen sharing needs a secure page — open the app on localhost or HTTPS."
+      );
+      return;
+    }
+
+    if (isEmbeddedPreview()) {
+      setScreenShareError(
+        "Screen sharing cannot run inside an embedded preview (VS Code or " +
+          "Electron). Open http://localhost:5173 in Chrome, Edge or Firefox."
+      );
       return;
     }
 
@@ -142,10 +193,37 @@ export default function useScreenShare(socket, activeRoomId) {
     setStartingShare(true);
     let stream;
     try {
-      stream = await getDisplayMedia.call(navigator.mediaDevices, {
-        video: true,
-        audio: true,
-      });
+      // Try progressively simpler constraint sets. Browsers reject a screen
+      // capture with NotSupportedError when a constraint they can't honour is
+      // present — classically `audio: true` (Firefox/Safari, Chrome on some
+      // platforms). The last attempt passes no constraints at all.
+      const attempts = [
+        { video: true, audio: true },
+        { video: true },
+        undefined,
+      ];
+      let lastError = null;
+      for (const constraints of attempts) {
+        try {
+          stream = constraints
+            ? await getDisplayMedia.call(navigator.mediaDevices, constraints)
+            : await getDisplayMedia.call(navigator.mediaDevices);
+          lastError = null;
+          break;
+        } catch (attemptError) {
+          lastError = attemptError;
+          // A real denial must never be retried — that re-prompts the user.
+          if (
+            attemptError.name === "NotAllowedError" ||
+            attemptError.name === "PermissionDeniedError"
+          ) {
+            break;
+          }
+        }
+      }
+      if (!stream) {
+        throw lastError || new Error("Screen capture is unavailable");
+      }
       if (roomRef.current !== MEETING_ROOM_ID || !socket.connected) {
         stream.getTracks().forEach((track) => track.stop());
         setStartingShare(false);
@@ -178,8 +256,19 @@ export default function useScreenShare(socket, activeRoomId) {
       } else if (error.name === "NotFoundError") {
         setScreenShareError("No screen, window, or tab is available to share.");
       } else {
-        console.error("Could not access screen capture:", error);
-        setScreenShareError("Could not start screen sharing. Check browser permissions.");
+        console.error("Could not access screen capture:", error, {
+          errorName: error.name,
+          errorMessage: error.message,
+          userAgent: navigator.userAgent,
+          secureContext: window.isSecureContext,
+          getDisplayMedia: typeof navigator.mediaDevices?.getDisplayMedia,
+        });
+        setScreenShareError(
+          `Screen capture was refused (${error.name || "unknown error"}) by ` +
+            `${describeBrowser()} · secure page: ${
+              window.isSecureContext ? "yes" : "no"
+            } · details in the console.`
+        );
       }
     }
   }, [
@@ -224,8 +313,9 @@ export default function useScreenShare(socket, activeRoomId) {
       socket.emit("screen:watch", { sharerId });
     };
 
-    const onList = ({ roomId, shares } = {}) => {
-      if (roomId !== MEETING_ROOM_ID || roomRef.current !== MEETING_ROOM_ID) {
+    // The server sends `room` (main's room name), not `roomId`.
+    const onList = ({ room, shares } = {}) => {
+      if (room !== MEETING_ROOM_NAME || roomRef.current !== MEETING_ROOM_ID) {
         return;
       }
       const validShares = Array.isArray(shares)

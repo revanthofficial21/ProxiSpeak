@@ -1,19 +1,27 @@
+
+
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
+require("dotenv").config();
 const { MongoClient } = require("mongodb");
-const path = require("path");
-require("dotenv").config({ path: path.join(__dirname, ".env") });
-
-const { getNearbyPlayers, PROXIMITY_RADIUS } = require("./proximity");
-const { initializeRoomCatalog } = require("./roomCatalog");
+const {
+  markPlayerConnected,
+  markPlayerDisconnected,
+  restoreReturningPlayer,
+} = require("./lib/player-persistence");
+const { initializeRoomCatalog } = require("./lib/roomCatalog");
+const {
+  DEFAULT_ROOM,
+  normalizeRoomName,
+  roomChannel,
+  getPlayersInRoom: getPlayersInNamedRoom,
+} = require("./lib/rooms");
 const {
   DEFAULT_ROOM_ID,
   getRoomChannel,
-  getPlayersInRoom,
   emitConnectedPlayerCount,
-  areInSameRoom,
   emitToRoom,
   emitRoomPresence,
   emitPlayerLeft,
@@ -25,120 +33,126 @@ const {
 } = require("./chat");
 const { registerChatTypingHandlers } = require("./chatTyping");
 const {
+  canJoinMeetingCall,
+  getMeetingCallParticipants,
+  canRelayWebRtcSignal,
+} = require("./lib/meeting-call");
+const { createRateLimiter } = require("./lib/rate-limit");
+const {
   registerScreenShareHandlers,
   stopActiveScreenShare,
   removeScreenViewer,
-} = require("./screenShare");
+} = require("./lib/screen-share");
+const {
+  initializeLayouts,
+  getLayout,
+  buildDefaultLayout,
+} = require("./lib/layouts");
+const { attachMesh, detachMesh } = require("./lib/mesh");
+const {
+  allocateSpawnPosition: pickSpawnPosition,
+  clampPosition,
+  normalizeDisplayName,
+  diffProximity,
+  isWithinProximity,
+  nearestPeers,
+} = require("./lib/session");
 
 const app = express();
 const httpServer = http.createServer(app);
-let mongoClient;
+
+const mongoClient = new MongoClient(process.env.MONGODB_URI, {
+  serverSelectionTimeoutMS: 10000,
+});
 
 let db;
+let mesh = null;
 let availableRooms = [];
 
-app.use(cors());
+// Browser origins allowed to connect. Comma-separated; "*" allows any origin,
+// which is convenient locally but should be set explicitly in production.
+const allowedOrigins = (process.env.CORS_ORIGIN || "*")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const corsOrigin = allowedOrigins.includes("*") ? true : allowedOrigins;
+
+app.use(cors({ origin: corsOrigin }));
 app.use(express.json());
+
+// The room catalog also scopes layouts, presence, proximity, and chat.
+app.get("/api/rooms", (req, res) => {
+  res.json({ rooms: availableRooms });
+});
+
+// The furniture and zones for one room, so the client does not have to hard-code
+// them. Falls back to the built-in layout if the document is missing or broken.
+app.get("/api/rooms/:id/layout", async (req, res) => {
+  try {
+    const layout = await getLayout(db, req.params.id);
+    res.json({ layout });
+  } catch (error) {
+    console.error("Could not load the room layout:", error.message);
+    res.status(500).json({ error: "Could not load the room layout." });
+  }
+});
 
 const io = new Server(httpServer, {
   cors: {
-    origin: ["http://localhost:5173", "http://localhost:5174"],
+    origin: corsOrigin,
     methods: ["GET", "POST"],
   },
 });
 
 const players = new Map();
+
+// Movement arrives ~25 times a second from an honest client; the burst is
+// generous but a flood is cut off. Chat is deliberately much stricter.
+const moveLimiter = createRateLimiter({ capacity: 80, refillPerSecond: 50 });
+const chatLimiter = createRateLimiter({ capacity: 5, refillPerSecond: 1 });
+
+// Tracks which players are currently within proximity of each other.
+// Drives the enter/leave events and gates the WebRTC signaling relay.
 const proximityState = new Map();
-const activeScreenShares = new Map();
+
+// Last nearby count per socket, so we only log when it changes.
+const lastNearbyCount = new Map();
+
+// Players currently in the Meeting Room call (talk regardless of distance).
+const meetingCallParticipants = new Set();
+
+// Active screen shares, keyed by the sharer's socket id.
+const activeShares = new Map();
+
 const WORLD_WIDTH = 1000;
 const WORLD_HEIGHT = 600;
-const PLAYER_RADIUS = 20;
+const PROXIMITY_RADIUS = 100;
+// Hysteresis: connect at 100px, but only disconnect past 115px.
+const PROXIMITY_LEAVE_RADIUS = 115;
+// Cap on how many peers one client connects to — the mesh must stay bounded.
+const MAX_MESH_PEERS = 8;
 const DEFAULT_AVATAR_COLOR = "#6ee7b7";
 const HEX_COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+const PLAYER_RADIUS = 20;
 const SPAWN_SPACINGS = [80, 60, 40];
 const SPAWN_MARGIN = PLAYER_RADIUS + 20;
 const spawnSlots = new Map();
 
+// The placement rules live in lib/session.js; this only supplies the world.
 function allocateSpawnPosition() {
-  const occupiedPositions = Array.from(spawnSlots.values());
-  const minimumSpacing = PLAYER_RADIUS * 2 + 8;
-
-  for (const spacing of SPAWN_SPACINGS) {
-    const columns =
-      Math.floor((WORLD_WIDTH - SPAWN_MARGIN * 2) / spacing) + 1;
-    const rows =
-      Math.floor((WORLD_HEIGHT - SPAWN_MARGIN * 2) / spacing) + 1;
-
-    for (let row = 0; row < rows; row += 1) {
-      for (let column = 0; column < columns; column += 1) {
-        const position = {
-          x: SPAWN_MARGIN + column * spacing,
-          y: SPAWN_MARGIN + row * spacing,
-        };
-        const isAvailable = occupiedPositions.every(
-          (occupied) =>
-            Math.hypot(position.x - occupied.x, position.y - occupied.y) >=
-            minimumSpacing
-        );
-
-        if (isAvailable) return position;
-      }
-    }
-  }
-
-  return {
-    x:
-      SPAWN_MARGIN +
-      (spawnSlots.size % (WORLD_WIDTH - SPAWN_MARGIN * 2)),
-    y:
-      SPAWN_MARGIN +
-      (Math.floor(
-        spawnSlots.size / (WORLD_WIDTH - SPAWN_MARGIN * 2)
-      ) %
-        (WORLD_HEIGHT - SPAWN_MARGIN * 2)),
-  };
-}
-
-function publicPlayer(player) {
-  return {
-    id: player.id,
-    name: player.name,
-    x: player.x,
-    y: player.y,
-    avatarColor: player.avatarColor || DEFAULT_AVATAR_COLOR,
-    roomId: player.roomId || DEFAULT_ROOM_ID,
-  };
-}
-
-function isNearby(firstId, secondId) {
-  const nearby = proximityState.get(firstId);
-  return Boolean(nearby && nearby.has(secondId));
-}
-
-function emitNearbyPlayers(exceptPlayerId) {
-  for (const [playerId, player] of players) {
-    if (playerId === exceptPlayerId) continue;
-    io.to(playerId).emit(
-      "player:nearby",
-      getNearbyPlayers(getPlayersInRoom(players, player.roomId), player)
-    );
-  }
-}
-
-function relayVoiceSignal(event, fromId, data, field) {
-  const targetId = data && data.targetId;
-  const payload = data && data[field];
-  if (
-    typeof targetId !== "string" ||
-    targetId === fromId ||
-    !payload ||
-    !areInSameRoom(players, fromId, targetId) ||
-    !isNearby(fromId, targetId)
-  ) {
-    return;
-  }
-
-  io.to(targetId).emit(event, { fromId, [field]: payload });
+  return pickSpawnPosition({
+    occupied: Array.from(spawnSlots.values()),
+    usedCount: spawnSlots.size,
+    width: WORLD_WIDTH,
+    height: WORLD_HEIGHT,
+    radius: PLAYER_RADIUS,
+    spacings: SPAWN_SPACINGS,
+    margin: SPAWN_MARGIN,
+    obstacles: buildDefaultLayout(DEFAULT_ROOM).furniture,
+    // Spread arrivals out — taking the first free slot stacks everyone in the
+    // top-left corner, which looks broken once two or three people join.
+    pick: (slots) => slots[Math.floor(Math.random() * slots.length)],
+  });
 }
 
 app.get("/", (req, res) => {
@@ -148,13 +162,55 @@ app.get("/", (req, res) => {
   });
 });
 
-app.get("/api/rooms", (req, res) => {
-  res.json({ rooms: availableRooms });
-});
+function publicPlayer(player) {
+  return {
+    id: player.id,
+    name: player.name,
+    avatarColor: player.avatarColor || DEFAULT_AVATAR_COLOR,
+    status: player.status || "",
+    x: player.x,
+    y: player.y,
+    roomId: player.roomId || DEFAULT_ROOM_ID,
+  };
+}
+
+function roomNameForId(roomId) {
+  return availableRooms.find((room) => room.id === roomId)?.name || DEFAULT_ROOM;
+}
+
+function roomIdForName(roomName) {
+  return (
+    availableRooms.find((room) => room.name === roomName)?.id ||
+    DEFAULT_ROOM_ID
+  );
+}
+
+// Relay a WebRTC signal to a peer, but only when the two are in the same space
+// and within proximity (or are members of the meeting call).
+function relaySignal(event, fromId, toId, payload) {
+  // Only same-room, in-range peers — or members of the meeting call — may
+  // exchange WebRTC signals.
+  if (
+    !canRelayWebRtcSignal(
+      fromId,
+      toId,
+      players,
+      proximityState,
+      meetingCallParticipants
+    )
+  ) {
+    return;
+  }
+
+  io.to(toId).emit(event, { ...payload, fromId });
+}
 
 // Group a player by proximity: send them the nearby list and tell both sides
 // who just entered / left range. Run on connect and on every move.
 async function syncProximity(socketId, player) {
+  // Peers already in range get the wider leave radius (hysteresis).
+  const oldNearby = proximityState.get(socketId) || new Set();
+
   const nearbyPlayers = await db
     .collection("players")
     .find({
@@ -163,14 +219,19 @@ async function syncProximity(socketId, player) {
       roomId: player.roomId,
       location: {
         $near: [player.x, player.y],
-        $maxDistance: PROXIMITY_RADIUS,
+        $maxDistance: PROXIMITY_LEAVE_RADIUS,
       },
     })
     .project({ _id: 0, socketId: 1, name: 1, avatarColor: 1, x: 1, y: 1 })
     .toArray();
 
-  const nearbyList = nearbyPlayers
-    .filter((nearbyPlayer) => players.has(nearbyPlayer.socketId))
+  // Same space only, then hysteresis, then the nearest peers — a full mesh does
+  // not scale, so each client connects only to those closest to them.
+  const candidates = nearbyPlayers
+    .filter((nearbyPlayer) => {
+      const peer = players.get(nearbyPlayer.socketId);
+      return peer && peer.roomId === player.roomId;
+    })
     .map((nearbyPlayer) => ({
       id: nearbyPlayer.socketId,
       socketId: nearbyPlayer.socketId,
@@ -178,37 +239,51 @@ async function syncProximity(socketId, player) {
       avatarColor: nearbyPlayer.avatarColor || DEFAULT_AVATAR_COLOR,
       x: nearbyPlayer.x,
       y: nearbyPlayer.y,
-    }));
+      distance: Math.hypot(
+        nearbyPlayer.x - player.x,
+        nearbyPlayer.y - player.y
+      ),
+    }))
+    .filter((candidate) =>
+      isWithinProximity({
+        distance: candidate.distance,
+        isAlreadyNearby: oldNearby.has(candidate.id),
+        enterRadius: PROXIMITY_RADIUS,
+        leaveRadius: PROXIMITY_LEAVE_RADIUS,
+      })
+    );
+
+  const nearbyList = nearestPeers(candidates, MAX_MESH_PEERS);
 
   io.to(socketId).emit("player:nearby", nearbyList);
 
-  const newNearby = new Set(nearbyList.map((nearbyPlayer) => nearbyPlayer.id));
-  const oldNearby = proximityState.get(socketId) || new Set();
+  const {
+    entered,
+    left,
+    next: newNearby,
+  } = diffProximity(
+    oldNearby,
+    nearbyList.map((p) => p.id)
+  );
 
-  for (const peerId of newNearby) {
-    if (oldNearby.has(peerId)) continue;
-    io.to(socketId).emit(
-      "proximity:enter",
-      nearbyList.find((nearbyPlayer) => nearbyPlayer.id === peerId)
-    );
-    io.to(peerId).emit("proximity:enter", publicPlayer(player));
-    const peerSet = proximityState.get(peerId) || new Set();
+  for (const id of entered) {
+    io.to(socketId).emit("proximity:enter", nearbyList.find((p) => p.id === id));
+    io.to(id).emit("proximity:enter", publicPlayer(player));
+
+    const peerSet = proximityState.get(id) || new Set();
     peerSet.add(socketId);
-    proximityState.set(peerId, peerSet);
+    proximityState.set(id, peerSet);
   }
 
-  for (const peerId of oldNearby) {
-    if (newNearby.has(peerId)) continue;
-    io.to(socketId).emit("proximity:leave", peerId);
-    io.to(peerId).emit("proximity:leave", socketId);
-    io.to(socketId).emit("voice:leave", { fromId: peerId });
-    io.to(peerId).emit("voice:leave", { fromId: socketId });
-    const peerSet = proximityState.get(peerId);
+  for (const id of left) {
+    io.to(socketId).emit("proximity:leave", id);
+    io.to(id).emit("proximity:leave", socketId);
+
+    const peerSet = proximityState.get(id);
     if (peerSet) peerSet.delete(socketId);
   }
 
   proximityState.set(socketId, newNearby);
-  emitNearbyPlayers(socketId);
   return nearbyList.length;
 }
 
@@ -223,34 +298,20 @@ io.on("connection", (socket) => {
     socketId: socket.id,
     name: "",
     avatarColor: DEFAULT_AVATAR_COLOR,
-    roomId: DEFAULT_ROOM_ID,
+    status: "",
+    room: DEFAULT_ROOM,
+    roomId: roomIdForName(DEFAULT_ROOM),
     presenceAnnounced: false,
     ...spawnPosition,
   };
-  players.set(socket.id, player);
-  emitConnectedPlayerCount(io, players);
-  proximityState.set(socket.id, new Set());
-  socket.join(getRoomChannel(player.roomId));
 
-  db.collection("players")
-    .updateOne(
-      { socketId: socket.id },
-      {
-        $set: {
-          socketId: socket.id,
-          name: player.name,
-          avatarColor: player.avatarColor,
-          roomId: player.roomId,
-          x: player.x,
-          y: player.y,
-          location: [player.x, player.y],
-          connected: true,
-          updatedAt: new Date(),
-        },
-        $setOnInsert: { createdAt: new Date() },
-      },
-      { upsert: true }
-    )
+  players.set(socket.id, player);
+  socket.join(roomChannel(player.room));
+  socket.join(getRoomChannel(player.roomId));
+  emitConnectedPlayerCount(io, players);
+
+  // Save the player's initial position.
+  markPlayerConnected(db.collection("players"), player)
     .then(() => syncProximity(socket.id, player))
     .catch((error) => {
       console.error("Failed to save player:", error.message);
@@ -258,12 +319,13 @@ io.on("connection", (socket) => {
 
   socket.emit(
     "world:state",
-    getPlayersInRoom(players, player.roomId).map(publicPlayer)
+    getPlayersInNamedRoom(players, player.room).map(publicPlayer)
   );
-  socket
-    .to(getRoomChannel(player.roomId))
-    .emit("player:joined", publicPlayer(player));
-  emitNearbyPlayers();
+  socket.emit("room:state", {
+    room: player.room,
+    players: getPlayersInNamedRoom(players, player.room).map(publicPlayer),
+  });
+  socket.to(roomChannel(player.room)).emit("player:joined", publicPlayer(player));
 
   const clearChatTyping = registerChatTypingHandlers(socket, { players, io });
   registerChatHandlers(socket, {
@@ -271,11 +333,7 @@ io.on("connection", (socket) => {
     players,
     io,
     onMessageSending: clearChatTyping,
-  });
-  registerScreenShareHandlers(socket, {
-    players,
-    io,
-    activeShares: activeScreenShares,
+    canSendMessage: () => chatLimiter.take(socket.id),
   });
   registerRoomHandler(socket, {
     availableRooms,
@@ -285,145 +343,72 @@ io.on("connection", (socket) => {
     publicPlayer,
     onRoomLeaving: async (socketId, previousRoomId) => {
       clearChatTyping();
-      if (previousRoomId === "meeting-room") {
-        stopActiveScreenShare(
-          socketId,
-          activeScreenShares,
-          io,
-          "room-left"
+      const wasInMeetingCall = meetingCallParticipants.has(socketId);
+      meetingCallParticipants.delete(socketId);
+      const previousRoomName = roomNameForId(previousRoomId);
+      if (previousRoomName === "Meeting Room") {
+        stopActiveScreenShare(socketId, activeShares, io, "room-left");
+      }
+      removeScreenViewer(socketId, activeShares, io);
+      if (wasInMeetingCall) {
+        io.to(roomChannel(previousRoomName)).emit(
+          "meeting:participant-left",
+          socketId
         );
       }
-      removeScreenViewer(socketId, activeScreenShares, io);
+      if (previousRoomName) socket.leave(roomChannel(previousRoomName));
     },
-    onRoomChanged: async (socketId, previousRoomId, roomId) => {
+    onRoomChanged: async (socketId, previousRoomId, nextRoomId) => {
+      const currentPlayer = players.get(socketId);
+      if (!currentPlayer) return;
+      await socket.join(roomChannel(currentPlayer.room));
+
       const nearby = proximityState.get(socketId) || new Set();
       for (const peerId of nearby) {
         io.to(socketId).emit("proximity:leave", peerId);
         io.to(peerId).emit("proximity:leave", socketId);
-        io.to(socketId).emit("voice:leave", { fromId: peerId });
-        io.to(peerId).emit("voice:leave", { fromId: socketId });
         const peerSet = proximityState.get(peerId);
         if (peerSet) peerSet.delete(socketId);
       }
       proximityState.set(socketId, new Set());
-      await syncProximity(socketId, players.get(socketId));
+      await syncProximity(socketId, currentPlayer);
       console.log(
-        `Player ${socketId} switched from ${previousRoomId} to ${roomId}`
+        `Player ${socketId} switched from ${previousRoomId} to ${nextRoomId}`
       );
     },
     loadChatHistory: (roomId) =>
       sendRoomChatHistory(socket, db, players, roomId),
   });
 
-  socket.on("voice:ready", (data) => {
-    const targetId = data && data.targetId;
-    if (
-      typeof targetId !== "string" ||
-      targetId === socket.id ||
-      !areInSameRoom(players, socket.id, targetId) ||
-      !isNearby(socket.id, targetId)
-    ) {
-      return;
-    }
-    io.to(targetId).emit("voice:ready", { fromId: socket.id });
+  // WebRTC signaling — relayed only between players within proximity.
+  socket.on("webrtc:offer", (data) => {
+    relaySignal("webrtc:offer", socket.id, data && data.targetId, {
+      offer: data && data.offer,
+    });
   });
 
-  socket.on("voice:offer", (data) => {
-    relayVoiceSignal("voice:offer", socket.id, data, "offer");
-  });
-  socket.on("voice:answer", (data) => {
-    relayVoiceSignal("voice:answer", socket.id, data, "answer");
-  });
-  socket.on("voice:ice-candidate", (data) => {
-    relayVoiceSignal("voice:ice-candidate", socket.id, data, "candidate");
-  });
-  socket.on("voice:leave", (data) => {
-    const targetId = data && data.targetId;
-    if (
-      typeof targetId !== "string" ||
-      targetId === socket.id ||
-      !areInSameRoom(players, socket.id, targetId) ||
-      !isNearby(socket.id, targetId)
-    ) {
-      return;
-    }
-    io.to(targetId).emit("voice:leave", { fromId: socket.id });
+  socket.on("webrtc:answer", (data) => {
+    relaySignal("webrtc:answer", socket.id, data && data.targetId, {
+      answer: data && data.answer,
+    });
   });
 
-  socket.on("player:setName", async (name, callback) => {
-    if (typeof name !== "string" || !name.trim()) {
-      if (typeof callback === "function") {
-        callback({ success: false, error: "Invalid player name" });
-      }
-      return;
-    }
-
-    const currentPlayer = players.get(socket.id);
-    if (!currentPlayer) {
-      if (typeof callback === "function") {
-        callback({ success: false, error: "Player not found" });
-      }
-      return;
-    }
-
-    const updatedName = name.trim().slice(0, 30);
-    try {
-      const result = await db.collection("players").updateOne(
-        { socketId: socket.id },
-        {
-          $set: {
-            name: updatedName,
-            updatedAt: new Date(),
-            connected: true,
-          },
-        }
-      );
-
-      if (result.matchedCount === 0) {
-        if (typeof callback === "function") {
-          callback({
-            success: false,
-            error: "Player record not found in MongoDB",
-          });
-        }
-        return;
-      }
-
-      const latestPlayer = players.get(socket.id);
-      if (!latestPlayer) {
-        if (typeof callback === "function") {
-          callback({ success: false, error: "Player not found" });
-        }
-        return;
-      }
-
-      const shouldAnnouncePresence = !latestPlayer.presenceAnnounced;
-      const updatedPlayer = {
-        ...latestPlayer,
-        name: updatedName,
-        presenceAnnounced: true,
-      };
-      players.set(socket.id, updatedPlayer);
-      emitToRoom(
-        io,
-        updatedPlayer.roomId,
-        "player:renamed",
-        publicPlayer(updatedPlayer)
-      );
-      if (shouldAnnouncePresence) {
-        emitRoomPresence(io, updatedPlayer.roomId, updatedPlayer, "joined", socket);
-      }
-      if (typeof callback === "function") {
-        callback({ success: true, name: updatedName });
-      }
-    } catch (error) {
-      console.error("Failed to save player name:", error.message);
-      if (typeof callback === "function") {
-        callback({ success: false, error: error.message });
-      }
-    }
+  socket.on("webrtc:ice", (data) => {
+    relaySignal("webrtc:ice", socket.id, data && data.targetId, {
+      candidate: data && data.candidate,
+    });
   });
 
+  // Handshake + teardown signals, relayed the same way.
+  socket.on("webrtc:ready", (data) => {
+    relaySignal("webrtc:ready", socket.id, data && data.targetId, {});
+  });
+
+  socket.on("webrtc:leave", (data) => {
+    relaySignal("webrtc:leave", socket.id, data && data.targetId, {});
+  });
+
+  // Save the player's avatar color.
   socket.on("player:setAvatarColor", async (color, callback) => {
     if (typeof color !== "string" || !HEX_COLOR_PATTERN.test(color)) {
       if (typeof callback === "function") {
@@ -470,17 +455,169 @@ io.on("connection", (socket) => {
         "player:avatarColorUpdated",
         publicPlayer(updatedPlayer)
       );
+
       if (typeof callback === "function") {
         callback({ success: true, avatarColor: color });
       }
     } catch (error) {
-      console.error("Failed to save player avatar color:", error.message);
+      console.error("Failed to save avatar color:", error.message);
       if (typeof callback === "function") {
         callback({ success: false, error: error.message });
       }
     }
   });
 
+  // Save the player's name.
+  socket.on("player:setName", async (name, callback) => {
+    const normalizedName = normalizeDisplayName(name);
+
+    if (!normalizedName) {
+      if (typeof callback === "function") {
+        callback({
+          success: false,
+          error: "Invalid player name",
+        });
+      }
+      return;
+    }
+
+    const currentPlayer = players.get(socket.id);
+
+    if (!currentPlayer) {
+      if (typeof callback === "function") {
+        callback({
+          success: false,
+          error: "Player not found",
+        });
+      }
+      return;
+    }
+
+    currentPlayer.name = normalizedName;
+
+    try {
+      // If this name has a saved (inactive) record, claim it and restore the
+      // player's previous position.
+      const returningPlayer = await restoreReturningPlayer(
+        db.collection("players"),
+        currentPlayer.name,
+        socket.id,
+        (savedPlayer) =>
+          clampPosition(savedPlayer.x, savedPlayer.y, {
+            width: WORLD_WIDTH,
+            height: WORLD_HEIGHT,
+            radius: PLAYER_RADIUS,
+          })
+      );
+
+      if (returningPlayer) {
+        // Restore everything the saved record holds, not just the position.
+        currentPlayer.x = returningPlayer.x;
+        currentPlayer.y = returningPlayer.y;
+        // Keep the spawn bookkeeping honest, otherwise the next arrival can be
+        // placed straight on top of the restored player.
+        spawnSlots.set(socket.id, {
+          x: returningPlayer.x,
+          y: returningPlayer.y,
+        });
+
+        if (returningPlayer.avatarColor) {
+          currentPlayer.avatarColor = returningPlayer.avatarColor;
+        }
+        if (typeof returningPlayer.status === "string") {
+          currentPlayer.status = returningPlayer.status;
+        }
+
+        const restoredRoom =
+          normalizeRoomName(returningPlayer.room) ||
+          roomNameForId(returningPlayer.roomId);
+        const restoredRoomId =
+          availableRooms.find((room) => room.name === restoredRoom)?.id ||
+          DEFAULT_ROOM_ID;
+        if (restoredRoomId !== currentPlayer.roomId) {
+          const previousRoomId = currentPlayer.roomId;
+          await socket.leave(roomChannel(currentPlayer.room));
+          await socket.leave(getRoomChannel(previousRoomId));
+          currentPlayer.room = restoredRoom;
+          currentPlayer.roomId = restoredRoomId;
+          await socket.join(roomChannel(restoredRoom));
+          await socket.join(getRoomChannel(restoredRoomId));
+        }
+      }
+
+      const result = await db.collection("players").updateOne(
+        { socketId: socket.id },
+        {
+          $set: {
+            name: currentPlayer.name,
+            avatarColor: currentPlayer.avatarColor,
+            status: currentPlayer.status || "",
+            room: currentPlayer.room,
+            roomId: currentPlayer.roomId,
+            x: currentPlayer.x,
+            y: currentPlayer.y,
+            location: [currentPlayer.x, currentPlayer.y],
+            updatedAt: new Date(),
+            connected: true,
+          },
+        }
+      );
+
+      console.log("Player name:", currentPlayer.name);
+      console.log("MongoDB matched:", result.matchedCount);
+
+      if (result.matchedCount === 0) {
+        if (typeof callback === "function") {
+          callback({
+            success: false,
+            error: "Player record not found in MongoDB",
+          });
+        }
+        return;
+      }
+
+      players.set(socket.id, currentPlayer);
+      emitToRoom(
+        io,
+        currentPlayer.roomId,
+        "player:renamed",
+        publicPlayer(currentPlayer)
+      );
+      if (!currentPlayer.presenceAnnounced) {
+        currentPlayer.presenceAnnounced = true;
+        emitRoomPresence(
+          io,
+          currentPlayer.roomId,
+          currentPlayer,
+          "joined",
+          socket
+        );
+      }
+      socket.emit(
+        "world:state",
+        getPlayersInNamedRoom(players, currentPlayer.room).map(publicPlayer)
+      );
+      await syncProximity(socket.id, currentPlayer);
+
+      if (typeof callback === "function") {
+        callback({
+          success: true,
+          name: currentPlayer.name,
+        });
+      }
+    } catch (error) {
+      console.error("Failed to save player name:", error.message);
+
+      if (typeof callback === "function") {
+        callback({
+          success: false,
+          error: error.message,
+        });
+      }
+    }
+  });
+
+  // Update position and find nearby players using MongoDB $near.
   socket.on("player:move", async (position) => {
     if (
       !position ||
@@ -490,36 +627,45 @@ io.on("connection", (socket) => {
       return;
     }
 
+    if (!moveLimiter.take(socket.id)) return;
+
     const currentPlayer = players.get(socket.id);
     if (!currentPlayer) return;
 
     const updatedPlayer = {
       ...currentPlayer,
-      x: Math.max(
-        PLAYER_RADIUS,
-        Math.min(WORLD_WIDTH - PLAYER_RADIUS, position.x)
-      ),
-      y: Math.max(
-        PLAYER_RADIUS,
-        Math.min(WORLD_HEIGHT - PLAYER_RADIUS, position.y)
-      ),
+      ...clampPosition(position.x, position.y, {
+        width: WORLD_WIDTH,
+        height: WORLD_HEIGHT,
+        radius: PLAYER_RADIUS,
+      }),
     };
+
     players.set(socket.id, updatedPlayer);
 
     try {
+      // upsert: if the connect-time insert hasn't landed yet (or the record was
+      // removed), still persist the move — otherwise the player vanishes from
+      // $near and nobody can detect them.
       await db.collection("players").updateOne(
         { socketId: socket.id },
         {
           $set: {
             name: updatedPlayer.name,
-            avatarColor: updatedPlayer.avatarColor || DEFAULT_AVATAR_COLOR,
+            status: updatedPlayer.status || "",
+            room: updatedPlayer.room,
+            roomId: updatedPlayer.roomId,
             x: updatedPlayer.x,
             y: updatedPlayer.y,
             location: [updatedPlayer.x, updatedPlayer.y],
             connected: true,
             updatedAt: new Date(),
           },
-        }
+          $setOnInsert: {
+            createdAt: new Date(),
+          },
+        },
+        { upsert: true }
       );
 
       emitToRoom(
@@ -528,15 +674,20 @@ io.on("connection", (socket) => {
         "player:moved",
         publicPlayer(updatedPlayer)
       );
+
       // Group users by proximity and report to both sides.
       const nearbyCount = await syncProximity(socket.id, updatedPlayer);
 
-      console.log(
-        "Nearby players for",
-        updatedPlayer.name || updatedPlayer.id,
-        ":",
-        nearbyCount
-      );
+      // Only log transitions — one line per move drowns the console.
+      if (lastNearbyCount.get(socket.id) !== nearbyCount) {
+        lastNearbyCount.set(socket.id, nearbyCount);
+        console.log(
+          "Nearby players for",
+          updatedPlayer.name || updatedPlayer.id,
+          ":",
+          nearbyCount
+        );
+      }
     } catch (error) {
       console.error(
         "Failed to update position/find nearby players:",
@@ -545,142 +696,235 @@ io.on("connection", (socket) => {
     }
   });
 
+  // Join the Meeting Room call — talk to room-mates regardless of distance.
+  socket.on("meeting:join", (callback) => {
+    const reply = (response) => {
+      if (typeof callback === "function") callback(response);
+    };
+
+    const currentPlayer = players.get(socket.id);
+    if (!canJoinMeetingCall(currentPlayer)) {
+      reply({ success: false, error: "Join the Meeting Room first" });
+      return;
+    }
+
+    meetingCallParticipants.add(socket.id);
+    const participants = getMeetingCallParticipants(
+      meetingCallParticipants,
+      players
+    );
+
+    const channel = roomChannel(currentPlayer.room);
+    if (channel) {
+      socket.to(channel).emit("meeting:participant-joined", {
+        id: currentPlayer.id,
+        name: currentPlayer.name || `Player ${currentPlayer.id.slice(0, 4)}`,
+      });
+    }
+
+    reply({ success: true, participants });
+  });
+
+  socket.on("meeting:leave", (callback) => {
+    const currentPlayer = players.get(socket.id);
+    meetingCallParticipants.delete(socket.id);
+
+    if (currentPlayer) {
+      const channel = roomChannel(currentPlayer.room);
+      if (channel) {
+        socket.to(channel).emit("meeting:participant-left", socket.id);
+      }
+    }
+
+    if (typeof callback === "function") callback({ success: true });
+  });
+
+  // A short status line shown on the profile and in the people list.
+  socket.on("player:setStatus", async (status, callback) => {
+    const reply = (response) => {
+      if (typeof callback === "function") callback(response);
+    };
+
+    const currentPlayer = players.get(socket.id);
+    if (!currentPlayer) {
+      reply({ success: false, error: "Player not found" });
+      return;
+    }
+
+    const nextStatus =
+      typeof status === "string" ? status.trim().slice(0, 80) : "";
+
+    try {
+      const result = await db.collection("players").updateOne(
+        { socketId: socket.id, connected: true },
+        { $set: { status: nextStatus, updatedAt: new Date() } }
+      );
+      if (result.matchedCount === 0) {
+        reply({ success: false, error: "Player record not found" });
+        return;
+      }
+
+      currentPlayer.status = nextStatus;
+      players.set(socket.id, currentPlayer);
+      io.to(getRoomChannel(currentPlayer.roomId)).emit("player:status", {
+        id: socket.id,
+        status: nextStatus,
+      });
+      reply({ success: true, status: nextStatus });
+    } catch (error) {
+      console.error("Failed to save player status:", error.message);
+      reply({ success: false, error: "Could not save your status." });
+    }
+  });
+
+  // Screen sharing — Meeting Room only, with its own signaling handlers.
+  registerScreenShareHandlers(socket, { players, io, activeShares });
+
+  // Mark the player disconnected.
   socket.on("disconnect", () => {
     const disconnectedPlayer = players.get(socket.id);
-    const nearby = proximityState.get(socket.id) || new Set();
-    for (const peerId of nearby) {
-      io.to(peerId).emit("proximity:leave", socket.id);
-      io.to(peerId).emit("voice:leave", { fromId: socket.id });
-      const peerSet = proximityState.get(peerId);
-      if (peerSet) peerSet.delete(socket.id);
+    const wasInMeetingCall = meetingCallParticipants.has(socket.id);
+    meetingCallParticipants.delete(socket.id);
+    players.delete(socket.id);
+    spawnSlots.delete(socket.id);
+    moveLimiter.forget(socket.id);
+    chatLimiter.forget(socket.id);
+    lastNearbyCount.delete(socket.id);
+
+    // Let proximity peers tear down their audio connections.
+    const nearSet = proximityState.get(socket.id);
+    if (nearSet) {
+      for (const id of nearSet) {
+        io.to(id).emit("proximity:leave", socket.id);
+        const peerSet = proximityState.get(id);
+        if (peerSet) peerSet.delete(socket.id);
+      }
+      proximityState.delete(socket.id);
     }
 
-    players.delete(socket.id);
-    emitConnectedPlayerCount(io, players);
-    proximityState.delete(socket.id);
-    spawnSlots.delete(socket.id);
-
-    db.collection("players")
-      .updateOne(
-        { socketId: socket.id },
-        { $set: { connected: false, updatedAt: new Date() } }
-      )
-      .catch((error) => {
+    markPlayerDisconnected(db.collection("players"), socket.id).catch(
+      (error) => {
         console.error("Failed to update player status:", error.message);
-      });
+      }
+    );
 
     if (disconnectedPlayer) {
+      if (wasInMeetingCall) {
+        io.to(roomChannel(disconnectedPlayer.room)).emit(
+          "meeting:participant-left",
+          socket.id
+        );
+      }
       emitPlayerLeft(io, disconnectedPlayer);
     }
-    emitNearbyPlayers();
+    emitConnectedPlayerCount(io, players);
     console.log(`Player disconnected: ${socket.id}`);
   });
 });
 
 const PORT = process.env.PORT || 3000;
 
-function safeErrorMessage(error) {
-  let message = error instanceof Error ? error.message : String(error);
-  const uri = process.env.MONGODB_URI;
-  if (uri) message = message.split(uri).join("[REDACTED MONGODB_URI]");
-  return message.replace(
-    /mongodb(?:\+srv)?:\/\/[^\s"'<>]+/gi,
-    "mongodb://[REDACTED]"
-  );
-}
-
 async function startServer() {
-  let startupPhase = "MongoDB configuration";
-
   try {
-    const mongoUri = process.env.MONGODB_URI;
-    if (!mongoUri) {
-      throw new Error("MONGODB_URI is not set in server/.env");
-    }
-    if (!/^mongodb(?:\+srv)?:\/\//i.test(mongoUri)) {
-      throw new Error(
-        "MONGODB_URI must use the mongodb:// or mongodb+srv:// scheme"
-      );
-    }
-
-    mongoClient = new MongoClient(mongoUri, {
-      serverSelectionTimeoutMS: 10000,
-    });
-
-    startupPhase = "MongoDB connection";
     await mongoClient.connect();
-
-    startupPhase = "MongoDB initialization";
     db = mongoClient.db("proxispeak");
-    availableRooms = await initializeRoomCatalog(db);
-    console.log("Room catalog loaded:", availableRooms.length);
 
     const collection = db.collection("players");
+
+    // Mark old sessions disconnected after a server restart.
     const cleanupResult = await collection.updateMany(
       { connected: true },
-      { $set: { connected: false, updatedAt: new Date() } }
+      {
+        $set: {
+          connected: false,
+          updatedAt: new Date(),
+        },
+      }
     );
+
     console.log(
       "Old player sessions marked as disconnected:",
       cleanupResult.modifiedCount
     );
 
+    // Ensure the location field has a 2d geospatial index whose bounds cover
+    // the whole world. A 2d index defaults to [-180, 180] (longitude/latitude),
+    // which rejects our 1000x600 pixel coordinates, so set min/max explicitly.
+    // Drop any stale index (wrong type or wrong bounds) before recreating it.
     const existingIndexes = await collection.listIndexes().toArray();
     const locationIndex = existingIndexes.find(
       (index) => index.key && index.key.location
     );
-    if (locationIndex) await collection.dropIndex(locationIndex.name);
+
+    if (locationIndex) {
+      await collection.dropIndex(locationIndex.name);
+    }
 
     await collection.createIndex(
       { location: "2d" },
       { min: 0, max: Math.max(WORLD_WIDTH, WORLD_HEIGHT) }
     );
+
     console.log("MongoDB 2d geospatial index ready!");
 
-    const chatCollection = db.collection("chatMessages");
-    await chatCollection.createIndex({
-      roomId: 1,
-      timestamp: -1,
-      _id: -1,
-    });
-    await chatCollection.createIndex(
-      { senderId: 1, clientMessageId: 1 },
-      {
-        unique: true,
-        partialFilterExpression: {
-          clientMessageId: { $type: "string" },
-        },
-      }
+    availableRooms = await initializeRoomCatalog(db);
+    console.log("Room catalog loaded:", availableRooms.length);
+
+    await initializeLayouts(
+      db,
+      availableRooms.map((room) => room.id)
     );
-    console.log("MongoDB chat indexes ready!");
+    console.log("Room layouts seeded.");
+
     console.log("MongoDB connected successfully!");
 
-    startupPhase = "HTTP server startup";
-    httpServer.once("error", (error) => {
-      console.error("HTTP server startup failed:", safeErrorMessage(error));
-      process.exitCode = 1;
-      mongoClient.close().catch((closeError) => {
-        console.error(
-          "MongoDB connection cleanup failed:",
-          safeErrorMessage(closeError)
-        );
-      });
-    });
+    // Scale out: with REDIS_URL set, instances share rooms and events via Redis.
+    try {
+      mesh = await attachMesh(io, process.env.REDIS_URL);
+      console.log(
+        mesh
+          ? "Redis mesh attached — multi-instance ready."
+          : "No REDIS_URL — running as a single instance."
+      );
+    } catch (error) {
+      console.error("Redis mesh failed to attach:", error.message);
+    }
+
     httpServer.listen(PORT, () => {
       console.log(`ProxiSpeak server running at http://localhost:${PORT}`);
     });
   } catch (error) {
-    console.error(`${startupPhase} failed:`, safeErrorMessage(error));
-    if (mongoClient) {
-      await mongoClient.close().catch((closeError) => {
-        console.error(
-          "MongoDB connection cleanup failed:",
-          safeErrorMessage(closeError)
-        );
-      });
-    }
+    console.error("Server startup failed:", error.message);
     process.exitCode = 1;
   }
 }
 
 startServer();
+
+// A single bad event must never take the whole server down.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection:", reason);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught exception — shutting down:", error);
+  shutdown("uncaughtException");
+});
+
+// Close sockets and the database cleanly so a restart doesn't leave
+// half-connected players behind.
+async function shutdown(signal) {
+  console.log(`${signal} received — shutting down.`);
+  try {
+    io.close();
+    httpServer.close();
+    await detachMesh(mesh);
+    await mongoClient.close();
+  } catch (error) {
+    console.error("Error during shutdown:", error.message);
+  }
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

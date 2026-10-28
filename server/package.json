@@ -6,20 +6,25 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node proximity.test.js && node roomCatalog.test.js && node roomHandler.test.js && node chat.test.js && node chatTyping.test.js && node screenShare.test.js"
+    "test": "node tests/proximity.test.js && node tests/player-persistence.test.js && node tests/roomCatalog.test.js && node tests/rooms.test.js && node tests/meeting-call.test.js && node tests/chat.test.js && node tests/rate-limit.test.js && node tests/session.test.js && node tests/screen-share.test.js && node tests/contracts.test.js && node tests/mesh.test.js && node tests/layouts.test.js",
+    "audit": "node audit.js",
+    "audit:local": "node spatial-benchmark.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
     "cors": "^2.8.6",
     "dotenv": "^18.0.7",
     "express": "^5.3.0",
     "mongodb": "^7.7.0",
+    "redis": "^6.3.0",
     "socket.io": "^4.8.4"
   },
   "devDependencies": {
+    "mongodb-memory-server": "^10.0.0",
     "nodemon": "^3.1.14"
   }
 }

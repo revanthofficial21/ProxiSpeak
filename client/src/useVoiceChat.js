@@ -1,136 +1,165 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  isSoundBlocked,
+  occlusionSettings,
+  CLEAR_LOWPASS_HZ,
+} from "./occlusion";
 
-const ICE_SERVERS = [
-  { urls: "stun:stun.l.google.com:19302" },
-];
+const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+
+// Optional TURN relay. STUN alone is enough on a LAN or with friendly NATs, but
+// peers behind symmetric NATs or strict firewalls never connect without a
+// relay — and they fail silently. Configure VITE_TURN_* in client/.env.
+const turnUrl = import.meta.env.VITE_TURN_URL;
+if (turnUrl) {
+  ICE_SERVERS.push({
+    urls: turnUrl,
+    username: import.meta.env.VITE_TURN_USERNAME,
+    credential: import.meta.env.VITE_TURN_CREDENTIAL,
+  });
+}
+
+// Spatial audio: peers fade out with distance and pan by relative position.
+const PROXIMITY_RADIUS = 100;
+const MAX_GAIN = 1;
+
+// Audio-level metering. An AnalyserNode taps a stream without affecting the
+// signal, so the meter reflects exactly what is being heard.
+function createLevelAnalyser(ctx) {
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 256;
+  analyser.smoothingTimeConstant = 0.6;
+  return analyser;
+}
+
+// Root-mean-square of the waveform, scaled so normal speech fills the meter.
+function readLevel(analyser, buffer) {
+  analyser.getByteTimeDomainData(buffer);
+  let sum = 0;
+  for (let i = 0; i < buffer.length; i += 1) {
+    const value = (buffer[i] - 128) / 128;
+    sum += value * value;
+  }
+  return Math.min(1, Math.sqrt(sum / buffer.length) * 4);
+}
 
 export default function useVoiceChat(
   socket,
   nearbyPlayers,
-  getLocalPlayerPosition
+  positionsRef,
+  { micDeviceId = "", obstacles = [] } = {}
 ) {
   const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState("Voice chat disabled");
+  const [peerStates, setPeerStates] = useState({});
   const [muted, setMuted] = useState(false);
   const [speakerVolume, setSpeakerVolume] = useState(100);
   const [audioOutputBlocked, setAudioOutputBlocked] = useState(false);
-  const [voiceStatus, setVoiceStatus] = useState("Voice chat disabled");
-  const [peerStates, setPeerStates] = useState({});
+  const [peerLevels, setPeerLevels] = useState({});
+  const [micLevel, setMicLevel] = useState(0);
 
   const streamRef = useRef(null);
-  const audioContextRef = useRef(null);
+  const micAnalyserRef = useRef(null);
+  const obstaclesRef = useRef(obstacles);
   const peersRef = useRef(new Map());
   const nearbyRef = useRef(nearbyPlayers);
   const pendingCandidatesRef = useRef(new Map());
-  const mutedRef = useRef(false);
-  const speakerVolumeRef = useRef(1);
+  const audioContextRef = useRef(null);
+  const mixerRef = useRef(new Map()); // peerId -> { source, gain, panner }
+  const speakerVolumeRef = useRef(1); // master volume, 0..1
+  const blockedRef = useRef(false);
 
-  const getAudioContext = useCallback(() => {
+  useEffect(() => {
+    nearbyRef.current = nearbyPlayers;
+  }, [nearbyPlayers]);
+
+  // The room layout can change while the loop runs; a ref keeps it current.
+  useEffect(() => {
+    obstaclesRef.current = obstacles;
+  }, [obstacles]);
+
+  // Create (and resume) the shared AudioContext. Browsers start it suspended,
+  // so this is called from the enableVoice click (a user gesture).
+  const ensureAudioContext = useCallback(() => {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+
     if (!audioContextRef.current) {
-      if (!window.AudioContext) {
-        throw new Error("Web Audio is not supported in this browser");
-      }
-
-      const context = new window.AudioContext();
-      context.onstatechange = () => {
-        setAudioOutputBlocked(context.state !== "running");
+      audioContextRef.current = new Ctx();
+      audioContextRef.current.onstatechange = () => {
+        setAudioOutputBlocked(audioContextRef.current.state !== "running");
       };
-      audioContextRef.current = context;
-      setAudioOutputBlocked(context.state !== "running");
     }
-
+    if (audioContextRef.current.state === "suspended") {
+      audioContextRef.current.resume().catch(() => {});
+    }
+    setAudioOutputBlocked(audioContextRef.current.state !== "running");
     return audioContextRef.current;
   }, []);
 
-  const resumeAudio = useCallback(async () => {
-    const context = audioContextRef.current;
-    if (!context) return;
+  const detachMixer = useCallback((peerId) => {
+    const nodes = mixerRef.current.get(peerId);
+    if (!nodes) return;
 
     try {
-      if (context.state !== "running") await context.resume();
-      const blocked = context.state !== "running";
-      setAudioOutputBlocked(blocked);
-      if (blocked) {
-        setVoiceStatus("Audio is paused — select Resume audio to hear players");
-      }
+      nodes.source.disconnect();
     } catch (error) {
-      console.error("Could not resume audio output:", error);
-      setAudioOutputBlocked(true);
-      setVoiceStatus("Audio is paused — select Resume audio to hear players");
+      // already disconnected
     }
+    try {
+      nodes.gain.disconnect();
+    } catch (error) {
+      // already disconnected
+    }
+    if (nodes.panner) {
+      try {
+        nodes.panner.disconnect();
+      } catch (error) {
+        // already disconnected
+      }
+    }
+    mixerRef.current.delete(peerId);
   }, []);
 
-  const updateSpatialAudio = useCallback(() => {
-    const localPlayer = getLocalPlayerPosition();
-
-    for (const [peerId, entry] of peersRef.current) {
-      if (!entry.gain) continue;
-
-      const remotePlayer = nearbyRef.current.find(
-        (player) => player.id === peerId
-      );
-      const hasPositions =
-        localPlayer &&
-        remotePlayer &&
-        Number.isFinite(localPlayer.x) &&
-        Number.isFinite(localPlayer.y) &&
-        Number.isFinite(remotePlayer.x) &&
-        Number.isFinite(remotePlayer.y);
-      const deltaX = hasPositions ? remotePlayer.x - localPlayer.x : 0;
-      const deltaY = hasPositions ? remotePlayer.y - localPlayer.y : 0;
-      const distance = hasPositions ? Math.hypot(deltaX, deltaY) : 100;
-      const spatialGain = Math.max(0, 1 - distance / 100);
-      const targetGain = spatialGain * speakerVolumeRef.current;
-      const targetPan = Math.max(-1, Math.min(1, deltaX / 100));
-      const currentTime = entry.gain.context.currentTime;
-
-      if (Math.abs((entry.targetGain ?? -1) - targetGain) >= 0.001) {
-        entry.gain.gain.setTargetAtTime(targetGain, currentTime, 0.08);
-        entry.targetGain = targetGain;
-      }
-      if (
-        entry.panner &&
-        Math.abs((entry.targetPan ?? 2) - targetPan) >= 0.01
-      ) {
-        entry.panner.pan.setTargetAtTime(targetPan, currentTime, 0.08);
-        entry.targetPan = targetPan;
-      }
-    }
-  }, [getLocalPlayerPosition]);
-
-  const connectRemoteAudio = useCallback(
+  // Route a remote stream through gain -> stereo panner -> speakers.
+  const attachRemoteStream = useCallback(
     (peerId, stream) => {
-      const entry = peersRef.current.get(peerId);
-      const context = audioContextRef.current;
-      if (!entry || !context) return;
+      const ctx = ensureAudioContext();
+      if (!ctx) return;
 
-      entry.source?.disconnect();
-      entry.gain?.disconnect();
-      entry.panner?.disconnect();
+      detachMixer(peerId);
 
-      const source = context.createMediaStreamSource(stream);
-      const gain = context.createGain();
-      const panner = context.createStereoPanner
-        ? context.createStereoPanner()
-        : null;
-      gain.gain.setValueAtTime(0, context.currentTime);
+      const source = ctx.createMediaStreamSource(stream);
+      const gain = ctx.createGain();
+      gain.gain.value = 0; // silent until the mixer sets it by distance
+
+      // Occlusion: a low-pass between the gain and the output dulls a voice that
+      // has furniture in the way, the way a wall does.
+      const lowpass = ctx.createBiquadFilter();
+      lowpass.type = "lowpass";
+      lowpass.frequency.value = CLEAR_LOWPASS_HZ;
+      lowpass.Q.value = 0.7;
+
       source.connect(gain);
-      if (panner) {
-        gain.connect(panner);
-        panner.connect(context.destination);
+      gain.connect(lowpass);
+
+      // A parallel tap for the level meter — connected to nothing downstream.
+      const analyser = createLevelAnalyser(ctx);
+      source.connect(analyser);
+
+      let panner = null;
+      if (typeof ctx.createStereoPanner === "function") {
+        panner = ctx.createStereoPanner();
+        lowpass.connect(panner);
+        panner.connect(ctx.destination);
       } else {
-        gain.connect(context.destination);
+        lowpass.connect(ctx.destination);
       }
 
-      entry.source = source;
-      entry.gain = gain;
-      entry.panner = panner;
-      entry.targetGain = -1;
-      entry.targetPan = 2;
-      setAudioOutputBlocked(context.state !== "running");
-      updateSpatialAudio();
+      mixerRef.current.set(peerId, { source, gain, lowpass, panner, analyser });
     },
-    [updateSpatialAudio]
+    [ensureAudioContext, detachMixer]
   );
 
   const closePeer = useCallback(
@@ -143,11 +172,10 @@ export default function useVoiceChat(
         entry.pc.onicecandidate = null;
         entry.pc.onconnectionstatechange = null;
         entry.pc.close();
-        entry.source?.disconnect();
-        entry.gain?.disconnect();
-        entry.panner?.disconnect();
         peersRef.current.delete(peerId);
       }
+
+      detachMixer(peerId);
 
       setPeerStates((current) => {
         if (!(peerId in current)) return current;
@@ -157,10 +185,10 @@ export default function useVoiceChat(
       });
 
       if (entry && notify && socket?.connected) {
-        socket.emit("voice:leave", { targetId: peerId });
+        socket.emit("webrtc:leave", { targetId: peerId });
       }
     },
-    [socket]
+    [socket, detachMixer]
   );
 
   const flushCandidates = useCallback(async (peerId, pc) => {
@@ -197,7 +225,7 @@ export default function useVoiceChat(
 
     pc.onicecandidate = (event) => {
       if (event.candidate && socket.connected) {
-        socket.emit("voice:ice-candidate", {
+        socket.emit("webrtc:ice", {
           targetId: peerId,
           candidate: event.candidate,
         });
@@ -205,9 +233,8 @@ export default function useVoiceChat(
     };
 
     pc.ontrack = (event) => {
-      const remoteStream =
-        event.streams[0] || new MediaStream([event.track]);
-      connectRemoteAudio(peerId, remoteStream);
+      attachRemoteStream(peerId, event.streams[0]);
+      setVoiceStatus("Voice connected");
     };
 
     pc.onconnectionstatechange = () => {
@@ -227,7 +254,7 @@ export default function useVoiceChat(
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      socket.emit("voice:offer", {
+      socket.emit("webrtc:offer", {
         targetId: peerId,
         offer: pc.localDescription,
       });
@@ -235,7 +262,7 @@ export default function useVoiceChat(
       console.error("Could not create voice offer:", error);
       closePeer(peerId);
     }
-  }, [socket, closePeer, connectRemoteAudio]);
+  }, [socket, closePeer, attachRemoteStream]);
 
   const enableVoice = useCallback(async () => {
     if (!socket?.connected) {
@@ -243,38 +270,35 @@ export default function useVoiceChat(
       return;
     }
 
-    let audioContext;
-    try {
-      audioContext = getAudioContext();
-    } catch (error) {
-      console.error("Audio output initialization failed:", error);
-      setVoiceStatus(error.message);
-      return;
-    }
-    const audioResume = resumeAudio();
+    // Create/resume the AudioContext synchronously, while we still hold the
+    // user gesture. Creating it after the getUserMedia await loses the
+    // gesture, so the browser leaves it suspended and audio stays silent.
+    ensureAudioContext();
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
+        // An exact device is requested when one is picked; otherwise the browser
+        // default, which is also what a first-time user gets.
+        audio: micDeviceId
+          ? { deviceId: { exact: micDeviceId } }
+          : true,
         video: false,
       });
-      await audioResume;
 
       streamRef.current = stream;
-      stream.getAudioTracks().forEach((track) => {
-        track.enabled = true;
-      });
-      mutedRef.current = false;
-      setMuted(false);
+
+      // Meter the local microphone too, so "is my mic working?" is visible.
+      const micCtx = ensureAudioContext();
+      if (micCtx) {
+        const micAnalyser = createLevelAnalyser(micCtx);
+        micCtx.createMediaStreamSource(stream).connect(micAnalyser);
+        micAnalyserRef.current = micAnalyser;
+      }
       setVoiceEnabled(true);
-      setVoiceStatus(
-        audioContext.state === "running"
-          ? "Microphone enabled — waiting for nearby players"
-          : "Audio is paused — select Resume audio to hear players"
-      );
+      setVoiceStatus("Microphone enabled — waiting for nearby players");
 
       nearbyRef.current.forEach((player) => {
-        socket.emit("voice:ready", { targetId: player.id });
+        socket.emit("webrtc:ready", { targetId: player.id });
 
         if (socket.id < player.id) {
           createOffer(player.id);
@@ -288,7 +312,7 @@ export default function useVoiceChat(
           : "Could not access microphone"
       );
     }
-  }, [socket, createOffer, getAudioContext, resumeAudio]);
+  }, [socket, createOffer, ensureAudioContext]);
 
   const disableVoice = useCallback(() => {
     for (const peerId of peersRef.current.keys()) {
@@ -297,40 +321,25 @@ export default function useVoiceChat(
 
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
+    micAnalyserRef.current = null;
+    setMicLevel(0);
+    setPeerLevels({});
     pendingCandidatesRef.current.clear();
-    mutedRef.current = false;
-    setMuted(false);
     setVoiceEnabled(false);
+    setMuted(false);
     setVoiceStatus("Voice chat disabled");
   }, [closePeer]);
-
-  const toggleMute = useCallback(() => {
-    const stream = streamRef.current;
-    if (!stream) return;
-
-    const nextMuted = !mutedRef.current;
-    stream.getAudioTracks().forEach((track) => {
-      track.enabled = !nextMuted;
-    });
-    mutedRef.current = nextMuted;
-    setMuted(nextMuted);
-  }, []);
-
-  const updateSpeakerVolume = useCallback((value) => {
-    const nextVolume = Number(value);
-    if (!Number.isFinite(nextVolume)) return;
-
-    const clampedVolume = Math.min(100, Math.max(0, nextVolume));
-    speakerVolumeRef.current = clampedVolume / 100;
-    setSpeakerVolume(clampedVolume);
-    updateSpatialAudio();
-  }, [updateSpatialAudio]);
 
   useEffect(() => {
     if (!socket) return;
 
     const onReady = ({ fromId } = {}) => {
       if (!fromId || !streamRef.current || socket.id > fromId) return;
+
+      // Already connected? Don't tear it down and renegotiate.
+      const existing = peersRef.current.get(fromId);
+      if (existing && existing.pc.connectionState === "connected") return;
+
       closePeer(fromId);
       createOffer(fromId);
     };
@@ -355,7 +364,7 @@ export default function useVoiceChat(
 
       pc.onicecandidate = (event) => {
         if (event.candidate && socket.connected) {
-          socket.emit("voice:ice-candidate", {
+          socket.emit("webrtc:ice", {
             targetId: fromId,
             candidate: event.candidate,
           });
@@ -363,9 +372,8 @@ export default function useVoiceChat(
       };
 
       pc.ontrack = (event) => {
-        const remoteStream =
-          event.streams[0] || new MediaStream([event.track]);
-        connectRemoteAudio(fromId, remoteStream);
+        attachRemoteStream(fromId, event.streams[0]);
+        setVoiceStatus("Voice connected");
       };
 
       pc.onconnectionstatechange = () => {
@@ -390,7 +398,7 @@ export default function useVoiceChat(
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
 
-        socket.emit("voice:answer", {
+        socket.emit("webrtc:answer", {
           targetId: fromId,
           answer: pc.localDescription,
         });
@@ -433,25 +441,22 @@ export default function useVoiceChat(
       if (fromId) closePeer(fromId);
     };
 
-    socket.on("voice:ready", onReady);
-    socket.on("voice:offer", onOffer);
-    socket.on("voice:answer", onAnswer);
-    socket.on("voice:ice-candidate", onCandidate);
-    socket.on("voice:leave", onLeave);
+    socket.on("webrtc:ready", onReady);
+    socket.on("webrtc:offer", onOffer);
+    socket.on("webrtc:answer", onAnswer);
+    socket.on("webrtc:ice", onCandidate);
+    socket.on("webrtc:leave", onLeave);
 
     return () => {
-      socket.off("voice:ready", onReady);
-      socket.off("voice:offer", onOffer);
-      socket.off("voice:answer", onAnswer);
-      socket.off("voice:ice-candidate", onCandidate);
-      socket.off("voice:leave", onLeave);
+      socket.off("webrtc:ready", onReady);
+      socket.off("webrtc:offer", onOffer);
+      socket.off("webrtc:answer", onAnswer);
+      socket.off("webrtc:ice", onCandidate);
+      socket.off("webrtc:leave", onLeave);
     };
-  }, [socket, closePeer, createOffer, flushCandidates, connectRemoteAudio]);
+  }, [socket, closePeer, createOffer, flushCandidates, attachRemoteStream]);
 
   useEffect(() => {
-    nearbyRef.current = nearbyPlayers;
-    updateSpatialAudio();
-
     const nearbyIds = new Set(nearbyPlayers.map((player) => player.id));
 
     for (const peerId of peersRef.current.keys()) {
@@ -462,10 +467,10 @@ export default function useVoiceChat(
 
     if (streamRef.current && socket?.connected) {
       nearbyPlayers.forEach((player) => {
-        socket.emit("voice:ready", { targetId: player.id });
+        socket.emit("webrtc:ready", { targetId: player.id });
       });
     }
-  }, [nearbyPlayers, socket, closePeer, updateSpatialAudio]);
+  }, [nearbyPlayers, socket, closePeer]);
 
   useEffect(() => {
     const onDisconnect = () => {
@@ -477,9 +482,8 @@ export default function useVoiceChat(
       streamRef.current = null;
       pendingCandidatesRef.current.clear();
       setPeerStates({});
-      mutedRef.current = false;
-      setMuted(false);
       setVoiceEnabled(false);
+      setMuted(false);
       setVoiceStatus("Server disconnected");
     };
 
@@ -498,31 +502,158 @@ export default function useVoiceChat(
     };
   }, [socket, closePeer]);
 
-  useEffect(
-    () => () => {
-      const context = audioContextRef.current;
-      if (!context) return;
+  // Toggle the local microphone without dropping any peer connections.
+  const toggleMute = useCallback(() => {
+    const stream = streamRef.current;
+    if (!stream) return;
 
-      context.onstatechange = null;
-      context.close().catch((error) => {
-        console.error("Could not close audio context:", error);
-      });
-      audioContextRef.current = null;
-    },
-    []
-  );
+    const nextMuted = !muted;
+    stream.getAudioTracks().forEach((track) => {
+      track.enabled = !nextMuted;
+    });
+    setMuted(nextMuted);
+  }, [muted]);
+
+  // Spatial mixer: every frame, set each peer's gain and stereo pan from the
+  // live avatar positions — volume falls off with distance, pan follows the
+  // peer's left/right offset from the local player.
+  useEffect(() => {
+    let frame;
+    let lastLevelSample = 0;
+    const levelBuffer = new Uint8Array(256);
+
+    const mix = () => {
+      const ctx = audioContextRef.current;
+
+      // If the browser suspended us (autoplay policy), try to resume, and
+      // surface it so the UI can offer a "Resume audio" control. Only setState
+      // when it actually changes — this runs every animation frame.
+      if (ctx) {
+        if (ctx.state === "suspended") ctx.resume().catch(() => {});
+        const blocked = ctx.state !== "running";
+        if (blocked !== blockedRef.current) {
+          blockedRef.current = blocked;
+          setAudioOutputBlocked(blocked);
+        }
+      }
+
+      const positions = positionsRef?.current;
+      const me = socket?.id;
+
+      if (ctx && positions && me && mixerRef.current.size > 0) {
+        const local = positions.get(me);
+
+        if (local) {
+          const now = ctx.currentTime;
+
+          for (const [peerId, nodes] of mixerRef.current.entries()) {
+            const peer = positions.get(peerId);
+            if (!peer || !Number.isFinite(peer.x) || !Number.isFinite(peer.y)) {
+              continue;
+            }
+
+            const dx = peer.x - local.x;
+            const dy = peer.y - local.y;
+            const distance = Math.hypot(dx, dy);
+
+            // Furniture in the way muffles the voice: less gain, duller tone.
+            const { gainScale, lowpassHz } = occlusionSettings(
+              isSoundBlocked(local, peer, obstaclesRef.current)
+            );
+
+            // Linear fall-off: full volume at 0px, silent at the radius edge,
+            // scaled by the master speaker volume and any occlusion.
+            const targetGain =
+              MAX_GAIN *
+              speakerVolumeRef.current *
+              gainScale *
+              Math.max(0, Math.min(1, 1 - distance / PROXIMITY_RADIUS));
+
+            // setTargetAtTime smooths the change, avoiding zipper clicks.
+            nodes.gain.gain.setTargetAtTime(targetGain, now, 0.05);
+
+            if (nodes.lowpass) {
+              nodes.lowpass.frequency.setTargetAtTime(lowpassHz, now, 0.08);
+            }
+
+            if (nodes.panner) {
+              const targetPan = Math.max(
+                -1,
+                Math.min(1, dx / PROXIMITY_RADIUS)
+              );
+              nodes.panner.pan.setTargetAtTime(targetPan, now, 0.05);
+            }
+          }
+        }
+      }
+
+      // Sample the meters a few times a second, not on every frame.
+      if (performance.now() - lastLevelSample > 120) {
+        lastLevelSample = performance.now();
+        const buffer = levelBuffer;
+        const nextLevels = {};
+        for (const [peerId, nodes] of mixerRef.current.entries()) {
+          nextLevels[peerId] = nodes.analyser
+            ? readLevel(nodes.analyser, buffer)
+            : 0;
+        }
+        setPeerLevels(nextLevels);
+        setMicLevel(
+          micAnalyserRef.current ? readLevel(micAnalyserRef.current, buffer) : 0
+        );
+      }
+
+      frame = requestAnimationFrame(mix);
+    };
+
+    frame = requestAnimationFrame(mix);
+    return () => cancelAnimationFrame(frame);
+  }, [socket, positionsRef]);
+
+  const changeSpeakerVolume = useCallback((value) => {
+    const clamped = Math.max(0, Math.min(100, Number(value) || 0));
+    speakerVolumeRef.current = clamped / 100;
+    setSpeakerVolume(clamped);
+  }, []);
+
+  const resumeAudio = useCallback(async () => {
+    const ctx = audioContextRef.current;
+    if (!ctx) return;
+    try {
+      if (ctx.state !== "running") await ctx.resume();
+      setAudioOutputBlocked(ctx.state !== "running");
+    } catch (error) {
+      console.error("Could not resume audio output:", error);
+    }
+  }, []);
+
+  // Send the mix to a chosen speaker. setSinkId is newer than the rest of this
+  // hook, so it is feature-detected rather than assumed.
+  const changeOutputDevice = useCallback(async (deviceId) => {
+    const ctx = audioContextRef.current;
+    if (!ctx || typeof ctx.setSinkId !== "function") return;
+
+    try {
+      await ctx.setSinkId(deviceId || "");
+    } catch (error) {
+      console.error("Could not switch audio output:", error);
+    }
+  }, []);
 
   return {
     voiceEnabled,
+    voiceStatus,
+    peerStates,
+    peerLevels,
+    micLevel,
     muted,
     speakerVolume,
     audioOutputBlocked,
-    voiceStatus,
-    peerStates,
     enableVoice,
     disableVoice,
     toggleMute,
-    updateSpeakerVolume,
+    changeSpeakerVolume,
+    changeOutputDevice,
     resumeAudio,
   };
 }
