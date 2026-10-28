@@ -174,6 +174,43 @@ check(
   isWithinProximity({ distance: Number.NaN, ...radii }) === false
 );
 
+// --- spawn spreading ---------------------------------------------------
+
+const spawnWorld = { width: 1000, height: 600, radius: 20, margin: 40 };
+
+const firstFree = allocateSpawnPosition(spawnWorld);
+check(
+  "the default pick is deterministic and takes the first slot",
+  firstFree.x === 40 && firstFree.y === 40
+);
+
+const lastSlot = allocateSpawnPosition({
+  ...spawnWorld,
+  pick: (slots) => slots[slots.length - 1],
+});
+check(
+  "a custom pick is honoured so arrivals can spread out",
+  lastSlot.x !== firstFree.x || lastSlot.y !== firstFree.y
+);
+
+const desk = { x: 0, y: 0, width: 200, height: 200 };
+const clearOfDesk = allocateSpawnPosition({ ...spawnWorld, obstacles: [desk] });
+check(
+  "no spawn lands inside furniture",
+  !(
+    clearOfDesk.x > desk.x - 20 &&
+    clearOfDesk.x < desk.x + desk.width + 20 &&
+    clearOfDesk.y > desk.y - 20 &&
+    clearOfDesk.y < desk.y + desk.height + 20
+  )
+);
+
+const crowded = allocateSpawnPosition({
+  ...spawnWorld,
+  occupied: [{ x: 40, y: 40 }],
+});
+check("an occupied slot is skipped", crowded.x !== 40 || crowded.y !== 40);
+
 console.log(
   failures === 0
     ? "All session tests passed"

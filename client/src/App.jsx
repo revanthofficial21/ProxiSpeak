@@ -540,13 +540,28 @@ export default function App() {
         ctx.fillText(initial || "?", player.x, player.y + 1);
         ctx.textBaseline = "alphabetic";
 
-        ctx.fillStyle = "#e2e8f0";
+        const label = isMe
+          ? "You"
+          : player.name || `Player ${player.id.slice(0, 4)}`;
         ctx.font = "12px Arial";
-        ctx.fillText(
-          isMe ? "You" : player.name || `Player ${player.id.slice(0, 4)}`,
-          player.x,
-          player.y + 40
+
+        // A backing plate keeps the name readable when another avatar sits close —
+        // without it the text and the neighbouring circle merge into a blur.
+        const labelWidth = ctx.measureText(label).width;
+        ctx.fillStyle = "rgba(15, 23, 42, 0.72)";
+        ctx.beginPath();
+        roundRect(
+          ctx,
+          player.x - labelWidth / 2 - 5,
+          player.y + 28,
+          labelWidth + 10,
+          17,
+          5
         );
+        ctx.fill();
+
+        ctx.fillStyle = "#e2e8f0";
+        ctx.fillText(label, player.x, player.y + 40);
       }
 
       animationId = requestAnimationFrame(draw);

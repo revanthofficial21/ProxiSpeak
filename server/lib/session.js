@@ -13,12 +13,28 @@ function allocateSpawnPosition({
   radius,
   spacings = [80, 60, 40],
   margin = radius + 20,
+  obstacles = [],
+  // Which free slot to take. The default keeps the first so the function stays
+  // deterministic; the server passes a random pick so arrivals spread across the
+  // room instead of stacking in the top-left corner.
+  pick = (slots) => slots[0],
 }) {
   const minimumSpacing = radius * 2 + 8;
+
+  // Never spawn inside a desk: the avatar would start stuck in the furniture.
+  const insideObstacle = (position) =>
+    obstacles.some(
+      (box) =>
+        position.x > box.x - radius &&
+        position.x < box.x + box.width + radius &&
+        position.y > box.y - radius &&
+        position.y < box.y + box.height + radius
+    );
 
   for (const spacing of spacings) {
     const columns = Math.floor((width - margin * 2) / spacing) + 1;
     const rows = Math.floor((height - margin * 2) / spacing) + 1;
+    const free = [];
 
     for (let row = 0; row < rows; row += 1) {
       for (let column = 0; column < columns; column += 1) {
@@ -27,15 +43,17 @@ function allocateSpawnPosition({
           y: margin + row * spacing,
         };
 
-        const free = occupied.every(
+        const clearOfPlayers = occupied.every(
           (slot) =>
             Math.hypot(position.x - slot.x, position.y - slot.y) >=
             minimumSpacing
         );
 
-        if (free) return position;
+        if (clearOfPlayers && !insideObstacle(position)) free.push(position);
       }
     }
+
+    if (free.length > 0) return pick(free) || free[0];
   }
 
   const spanX = Math.max(1, width - margin * 2);

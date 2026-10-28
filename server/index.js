@@ -26,7 +26,11 @@ const {
 const { createChatMessage } = require("./lib/chat");
 const { createRateLimiter } = require("./lib/rate-limit");
 const { registerScreenShareHandlers } = require("./lib/screen-share");
-const { initializeLayouts, getLayout } = require("./lib/layouts");
+const {
+  initializeLayouts,
+  getLayout,
+  buildDefaultLayout,
+} = require("./lib/layouts");
 const { attachMesh, detachMesh } = require("./lib/mesh");
 const {
   allocateSpawnPosition: pickSpawnPosition,
@@ -128,6 +132,10 @@ function allocateSpawnPosition() {
     radius: PLAYER_RADIUS,
     spacings: SPAWN_SPACINGS,
     margin: SPAWN_MARGIN,
+    obstacles: buildDefaultLayout(DEFAULT_ROOM).furniture,
+    // Spread arrivals out — taking the first free slot stacks everyone in the
+    // top-left corner, which looks broken once two or three people join.
+    pick: (slots) => slots[Math.floor(Math.random() * slots.length)],
   });
 }
 
@@ -412,6 +420,12 @@ io.on("connection", (socket) => {
         // Restore everything the saved record holds, not just the position.
         currentPlayer.x = returningPlayer.x;
         currentPlayer.y = returningPlayer.y;
+        // Keep the spawn bookkeeping honest, otherwise the next arrival can be
+        // placed straight on top of the restored player.
+        spawnSlots.set(socket.id, {
+          x: returningPlayer.x,
+          y: returningPlayer.y,
+        });
 
         if (returningPlayer.avatarColor) {
           currentPlayer.avatarColor = returningPlayer.avatarColor;
