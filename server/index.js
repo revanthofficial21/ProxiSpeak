@@ -350,18 +350,21 @@ io.on("connection", (socket) => {
         stopActiveScreenShare(socketId, activeShares, io, "room-left");
       }
       removeScreenViewer(socketId, activeShares, io);
-      if (wasInMeetingCall) {
-        io.to(roomChannel(previousRoomName)).emit(
-          "meeting:participant-left",
-          socketId
-        );
+      const previousChannel = roomChannel(previousRoomName);
+      if (wasInMeetingCall && previousChannel) {
+        io.to(previousChannel).emit("meeting:participant-left", socketId);
       }
-      if (previousRoomName) socket.leave(roomChannel(previousRoomName));
+
+      // Both channel schemes are joined on connect, so both must be left here —
+      // otherwise a player keeps hearing the room they walked out of.
+      if (previousChannel) socket.leave(previousChannel);
+      socket.leave(getRoomChannel(previousRoomId));
     },
     onRoomChanged: async (socketId, previousRoomId, nextRoomId) => {
       const currentPlayer = players.get(socketId);
       if (!currentPlayer) return;
       await socket.join(roomChannel(currentPlayer.room));
+      await socket.join(getRoomChannel(currentPlayer.roomId));
 
       const nearby = proximityState.get(socketId) || new Set();
       for (const peerId of nearby) {
@@ -809,11 +812,9 @@ io.on("connection", (socket) => {
     );
 
     if (disconnectedPlayer) {
-      if (wasInMeetingCall) {
-        io.to(roomChannel(disconnectedPlayer.room)).emit(
-          "meeting:participant-left",
-          socket.id
-        );
+      const leftChannel = roomChannel(disconnectedPlayer.room);
+      if (wasInMeetingCall && leftChannel) {
+        io.to(leftChannel).emit("meeting:participant-left", socket.id);
       }
       emitPlayerLeft(io, disconnectedPlayer);
     }

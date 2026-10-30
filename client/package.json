@@ -6,10 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node --test src/unreadMessages.test.js",
+    "test": "node --test src/unreadMessages.test.js src/typingIndicators.test.js && node tests/run.cjs && node src/occlusion.test.js",
     "lint": "eslint .",
-    "preview": "vite preview",
-    "test": "node tests/run.cjs && node src/occlusion.test.js"
+    "preview": "vite preview"
   },
   "dependencies": {
     "react": "^19.2.8",
