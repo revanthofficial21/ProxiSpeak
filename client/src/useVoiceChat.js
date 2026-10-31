@@ -20,6 +20,8 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
   const enabledRef = useRef(false);
   const mutedRef = useRef(false);
   const volumeRef = useRef(1);
+  const audioContextRef = useRef(null);
+  const audioNodesRef = useRef(new Map());
 
   const updatePeerState = useCallback((peerId, state) => {
     setPeerStates((previous) => ({
@@ -45,6 +47,19 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
       audio.pause();
       audio.srcObject = null;
       audioElementsRef.current.delete(peerId);
+    }
+
+    const audioNodes = audioNodesRef.current.get(peerId);
+
+    if (audioNodes) {
+      try {
+        audioNodes.source.disconnect();
+        audioNodes.gain.disconnect();
+      } catch {
+        // Nodes may already be disconnected.
+      }
+
+      audioNodesRef.current.delete(peerId);
     }
 
     setPeerStates((previous) => {
@@ -89,10 +104,41 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
         }
 
         audio.srcObject = event.streams[0];
-        audio.volume = volumeRef.current;
+        audio.volume = 1;
         audio.muted = mutedRef.current;
 
         try {
+          const AudioContextClass =
+            window.AudioContext || window.webkitAudioContext;
+
+          if (
+            AudioContextClass &&
+            !audioNodesRef.current.has(peerId)
+          ) {
+            const audioContext =
+              audioContextRef.current ||
+              (audioContextRef.current = new AudioContextClass());
+
+            const source =
+              audioContext.createMediaElementSource(audio);
+
+            const gain = audioContext.createGain();
+
+            gain.gain.value = 0;
+
+            source.connect(gain);
+            gain.connect(audioContext.destination);
+
+            audioNodesRef.current.set(peerId, {
+              source,
+              gain,
+            });
+          }
+
+          if (audioContextRef.current?.state === "suspended") {
+            await audioContextRef.current.resume();
+          }
+
           await audio.play();
           setAudioOutputBlocked(false);
         } catch {
@@ -140,9 +186,17 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
       });
 
       localStreamRef.current = stream;
+
+      if (audioContextRef.current?.state === "suspended") {
+        await audioContextRef.current.resume();
+      }
+
       enabledRef.current = true;
       setVoiceEnabled(true);
-      setVoiceStatus("Microphone enabled. Waiting for nearby players.");
+
+      setVoiceStatus(
+        "Microphone enabled. Waiting for nearby players."
+      );
 
       if (socket?.connected) {
         socket.emit("voice:join");
@@ -172,6 +226,17 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
 
     audioElementsRef.current.clear();
 
+    audioNodesRef.current.forEach(({ source, gain }) => {
+      try {
+        source.disconnect();
+        gain.disconnect();
+      } catch {
+        // Nodes may already be disconnected.
+      }
+    });
+
+    audioNodesRef.current.clear();
+
     localStreamRef.current?.getTracks().forEach((track) => {
       track.stop();
     });
@@ -190,6 +255,7 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
 
   const toggleMute = useCallback(() => {
     const nextMuted = !mutedRef.current;
+
     mutedRef.current = nextMuted;
     setMuted(nextMuted);
 
@@ -208,17 +274,16 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
       Math.min(100, Number(value) || 0)
     );
 
-    const volume = numericValue / 100;
-    volumeRef.current = volume;
+    volumeRef.current = numericValue / 100;
     setSpeakerVolume(numericValue);
-
-    audioElementsRef.current.forEach((audio) => {
-      audio.volume = volume;
-    });
   }, []);
 
   const resumeAudio = useCallback(async () => {
     try {
+      if (audioContextRef.current?.state === "suspended") {
+        await audioContextRef.current.resume();
+      }
+
       for (const audio of audioElementsRef.current.values()) {
         await audio.play();
       }
@@ -243,6 +308,7 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
         );
 
         const answer = await connection.createAnswer();
+
         await connection.setLocalDescription(answer);
 
         socket.emit("webrtc:answer", {
@@ -330,7 +396,80 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
       socket.off("voice:peer", handleVoicePeer);
       socket.off("voice:peer-left", handlePeerLeft);
     };
-  }, [socket, createPeerConnection, updatePeerState, closePeer]);
+  }, [
+    socket,
+    createPeerConnection,
+    updatePeerState,
+    closePeer,
+  ]);
+
+  useEffect(() => {
+    if (!voiceEnabled) return undefined;
+
+    const updateSpatialAudio = () => {
+      const audioContext = audioContextRef.current;
+      const players = playersRef?.current;
+
+      if (
+        !audioContext ||
+        !players ||
+        typeof players.get !== "function"
+      ) {
+        return;
+      }
+
+      const localPlayer = players.get(socket?.id);
+
+      if (!localPlayer) return;
+
+      audioNodesRef.current.forEach(({ gain }, peerId) => {
+        const remotePlayer = players.get(peerId);
+
+        if (
+          !remotePlayer ||
+          typeof localPlayer.x !== "number" ||
+          typeof localPlayer.y !== "number" ||
+          typeof remotePlayer.x !== "number" ||
+          typeof remotePlayer.y !== "number"
+        ) {
+          gain.gain.setTargetAtTime(
+            0,
+            audioContext.currentTime,
+            0.04
+          );
+          return;
+        }
+
+        const dx = localPlayer.x - remotePlayer.x;
+        const dy = localPlayer.y - remotePlayer.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        const distanceGain = Math.max(
+          0,
+          Math.min(1, 1 - distance / 100)
+        );
+
+        const targetGain = mutedRef.current
+          ? 0
+          : volumeRef.current * distanceGain;
+
+        gain.gain.setTargetAtTime(
+          targetGain,
+          audioContext.currentTime,
+          0.04
+        );
+      });
+    };
+
+    updateSpatialAudio();
+
+    const intervalId = window.setInterval(
+      updateSpatialAudio,
+      100
+    );
+
+    return () => window.clearInterval(intervalId);
+  }, [voiceEnabled, socket, playersRef]);
 
   useEffect(() => {
     if (!voiceEnabled || !socket?.connected) return;
@@ -367,6 +506,26 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
 
       peerConnectionsRef.current.clear();
       audioElementsRef.current.clear();
+
+      audioNodesRef.current.forEach(({ source, gain }) => {
+        try {
+          source.disconnect();
+          gain.disconnect();
+        } catch {
+          // Nodes may already be disconnected.
+        }
+      });
+
+      audioNodesRef.current.clear();
+
+      if (
+        audioContextRef.current &&
+        audioContextRef.current.state !== "closed"
+      ) {
+        audioContextRef.current.close();
+      }
+
+      audioContextRef.current = null;
     };
   }, []);
 
