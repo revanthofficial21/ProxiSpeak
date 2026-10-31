@@ -3,6 +3,7 @@ import { io } from "socket.io-client";
 import useVoiceChat from "./useVoiceChat";
 import useScreenShare from "./useScreenShare";
 import useAudioDevices from "./useAudioDevices";
+import { addActivity } from "./activity";
 import Landing from "./Landing";
 import { DEFAULT_LAYOUT, furnitureOf, zonesOf, plantsOf } from "./office";
 import useRoomLayout from "./useRoomLayout";
@@ -265,6 +266,7 @@ export default function App() {
 
   const [showLanding, setShowLanding] = useState(true);
   const [activeView, setActiveView] = useState("office");
+  const [activity, setActivity] = useState([]);
   const [micDeviceId, setMicDeviceId] = useState("");
   const [speakerDeviceId, setSpeakerDeviceId] = useState("");
   const [connected, setConnected] = useState(false);
@@ -337,6 +339,9 @@ export default function App() {
     const presenceTimers = presenceTimersRef.current;
 
     client.on("connect", () => setConnected(true));
+    client.on("activity", (notification) => {
+      setActivity((list) => addActivity(list, notification));
+    });
     client.on("disconnect", () => {
       setConnected(false);
       setConnectedPlayerCount(0);
@@ -1417,6 +1422,25 @@ export default function App() {
               </li>
             ))}
           </ul>
+        )}
+
+        {activity.length > 0 && (
+          <div className="activity-feed">
+            <h3>Recent activity</h3>
+            <ul>
+              {activity.slice(0, 8).map((item) => (
+                <li key={item.id} className={`activity-item is-${item.type}`}>
+                  <span className="activity-text">{item.message}</span>
+                  <time dateTime={item.timestamp}>
+                    {new Date(item.timestamp).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </time>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
       </section>
 

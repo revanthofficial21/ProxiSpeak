@@ -1297,3 +1297,64 @@ button:disabled {
 .ring-swatch.is-close { background: #34d399; }
 .ring-swatch.is-medium { background: #38bdf8; }
 .ring-swatch.is-far { background: #f87171; }
+
+/* Recent activity feed */
+.activity-feed {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid #1e293b;
+}
+
+.activity-feed h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.activity-feed ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.activity-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: #94a3b8;
+  padding-left: 10px;
+  border-left: 2px solid #334155;
+}
+
+.activity-item.is-player-joined {
+  border-left-color: #34d399;
+}
+
+.activity-item.is-player-left {
+  border-left-color: #f87171;
+}
+
+.activity-item.is-proximity-enter {
+  border-left-color: #38bdf8;
+}
+
+.activity-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-item time {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: #64748b;
+}

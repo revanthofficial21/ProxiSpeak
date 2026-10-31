@@ -27,6 +27,7 @@ const {
   emitPlayerLeft,
 } = require("./roomUtils");
 const { registerRoomHandler } = require("./roomHandler");
+const { createActivity } = require("./lib/activity");
 const {
   registerChatHandlers,
   sendRoomChatHistory,
@@ -137,6 +138,16 @@ const PLAYER_RADIUS = 20;
 const SPAWN_SPACINGS = [80, 60, 40];
 const SPAWN_MARGIN = PLAYER_RADIUS + 20;
 const spawnSlots = new Map();
+
+// Presence notifications go to the room the player is in, so only the people who
+// could plausibly care see them.
+function emitActivity(io, type, player, room = player?.room) {
+  const notification = createActivity(type, player, room);
+  if (!notification) return;
+
+  const channel = roomChannel(room);
+  if (channel) io.to(channel).emit("activity", notification);
+}
 
 // The placement rules live in lib/session.js; this only supplies the world.
 function allocateSpawnPosition() {
@@ -270,6 +281,13 @@ async function syncProximity(socketId, player) {
     io.to(socketId).emit("proximity:enter", nearbyList.find((p) => p.id === id));
     io.to(id).emit("proximity:enter", publicPlayer(player));
 
+    // "X is now nearby" is only useful to the player who can now hear them.
+    const peer = players.get(id);
+    const notification = peer
+      ? createActivity("proximity-enter", peer, player.room)
+      : null;
+    if (notification) io.to(socketId).emit("activity", notification);
+
     const peerSet = proximityState.get(id) || new Set();
     peerSet.add(socketId);
     proximityState.set(id, peerSet);
@@ -326,6 +344,7 @@ io.on("connection", (socket) => {
     players: getPlayersInNamedRoom(players, player.room).map(publicPlayer),
   });
   socket.to(roomChannel(player.room)).emit("player:joined", publicPlayer(player));
+  emitActivity(io, "player-joined", player);
 
   const clearChatTyping = registerChatTypingHandlers(socket, { players, io });
   registerChatHandlers(socket, {
@@ -816,6 +835,7 @@ io.on("connection", (socket) => {
       if (wasInMeetingCall && leftChannel) {
         io.to(leftChannel).emit("meeting:participant-left", socket.id);
       }
+      emitActivity(io, "player-left", disconnectedPlayer);
       emitPlayerLeft(io, disconnectedPlayer);
     }
     emitConnectedPlayerCount(io, players);
