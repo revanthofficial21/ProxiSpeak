@@ -1287,14 +1287,19 @@ export default function App() {
     socket.on("chat:message", (message) => {
       if (
         !message ||
-        !Number.isSafeInteger(message.id) ||
+        (typeof message.id !== "string" &&
+          !Number.isSafeInteger(message.id)) ||
         typeof message.senderName !== "string" ||
-        typeof message.text !== "string"
+        typeof message.text !== "string" ||
+        (message.scope !== "world" && message.scope !== "room")
       ) {
         return;
       }
-      setChatMessages((current) => [...current.slice(-99), message]);
-      setMessages((current) => [...current.slice(-199), message]);
+      if (message.scope === "world") {
+        setMessages((current) => [...current.slice(-199), message]);
+      } else if (message.room === currentRoomRef.current) {
+        setChatMessages((current) => [...current.slice(-99), message]);
+      }
     });
 
     socket.on("player:status", ({ id, status: nextStatus } = {}) => {
@@ -1709,7 +1714,7 @@ export default function App() {
       return;
     }
 
-    client.emit("chat:send", text, (response) => {
+    client.emit("world-chat:send", text, (response) => {
       if (!response?.success) {
         setChatError(response?.error || "Could not send your message.");
         return;

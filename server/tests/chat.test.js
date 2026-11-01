@@ -1,5 +1,6 @@
 const {
   createChatMessage,
+  deliverChatMessage,
   MAX_CHAT_MESSAGE_LENGTH,
 } = require("../lib/chat");
 
@@ -43,6 +44,61 @@ check(
   createChatMessage(null, "Hello", 6) === null &&
     createChatMessage({ id: "socket-2", name: "" }, "Hello", 7)
       ?.senderName === "Player"
+);
+
+const loungeMessages = [];
+const meetingMessages = [];
+const worldMessages = [];
+const roomSinks = {
+  Lounge: loungeMessages,
+  "Meeting Room": meetingMessages,
+};
+const sendRoomMessage = (room, payload) => {
+  const recipients = roomSinks[room];
+  if (!recipients) return false;
+  recipients.push(payload);
+  return true;
+};
+
+const roomMessage = { scope: "room", room: "Lounge", text: "Room hello" };
+check(
+  "room messages are delivered only to the sender's room",
+  deliverChatMessage({
+    scope: "room",
+    message: roomMessage,
+    room: "Lounge",
+    emitWorld: (payload) => worldMessages.push(payload),
+    emitRoom: sendRoomMessage,
+  }) &&
+    loungeMessages[0] === roomMessage &&
+    meetingMessages.length === 0 &&
+    worldMessages.length === 0
+);
+
+const worldMessage = { scope: "world", text: "Everyone hello" };
+const connectedUsers = [loungeMessages, meetingMessages];
+check(
+  "world messages reach users in different rooms",
+  deliverChatMessage({
+    scope: "world",
+    message: worldMessage,
+    room: null,
+    emitWorld: (payload) => connectedUsers.forEach((inbox) => inbox.push(payload)),
+    emitRoom: sendRoomMessage,
+  }) &&
+    loungeMessages.includes(worldMessage) &&
+    meetingMessages.includes(worldMessage)
+);
+
+check(
+  "room messages with an invalid room are not delivered",
+  !deliverChatMessage({
+    scope: "room",
+    message: { text: "Invalid room" },
+    room: null,
+    emitWorld: () => {},
+    emitRoom: sendRoomMessage,
+  })
 );
 
 console.log(

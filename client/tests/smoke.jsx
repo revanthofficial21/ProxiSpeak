@@ -157,6 +157,118 @@ async function main() {
     !container.textContent.includes("Other Room Player")
   );
 
+  act(() => {
+    globalThis.__testSocket.__handlers.get("connect")();
+  });
+  const worldChat = container.querySelector(
+    '.chat-panel[data-panel="chat"]'
+  );
+  const roomChat = container.querySelector('aside.chat-panel');
+  const worldChatInput = worldChat.querySelector("input");
+  const roomChatInput = roomChat.querySelector("input");
+  const setInputValue = (input, value) => {
+    Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value"
+    ).set.call(input, value);
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+  };
+
+  await act(async () => {
+    setInputValue(worldChatInput, "World hello");
+  });
+  await act(async () => {
+    worldChat.querySelector("form").dispatchEvent(
+      new window.Event("submit", { bubbles: true, cancelable: true })
+    );
+  });
+  check(
+    "World Chat Send emits the world chat event",
+    globalThis.__testSocket.__emitted.some(
+      ({ event }) => event === "world-chat:send"
+    )
+  );
+
+  act(() => {
+    globalThis.__testSocket.__handlers.get("chat:message")({
+      id: "test-player-1",
+      senderName: "Current Player",
+      text: "World hello",
+      room: "Lounge",
+      scope: "world",
+    });
+  });
+  check(
+    "string-id world messages render in World Chat",
+    worldChat.textContent.includes("World hello") &&
+      !roomChat.textContent.includes("World hello")
+  );
+
+  await act(async () => {
+    setInputValue(roomChatInput, "Room hello");
+  });
+  await act(async () => {
+    roomChat.querySelector("form").dispatchEvent(
+      new window.Event("submit", { bubbles: true, cancelable: true })
+    );
+  });
+  check(
+    "room chat Send emits the room chat event",
+    globalThis.__testSocket.__emitted.some(
+      ({ event }) => event === "chat:send"
+    )
+  );
+
+  act(() => {
+    globalThis.__testSocket.__handlers.get("chat:message")({
+      id: "test-player-2",
+      senderName: "Second Player",
+      text: "Room hello",
+      room: "Lounge",
+      scope: "room",
+    });
+  });
+  check(
+    "room messages render only in the active room chat",
+    roomChat.textContent.includes("Room hello") &&
+      !worldChat.textContent.includes("Room hello")
+  );
+  act(() => {
+    globalThis.__testSocket.__handlers.get("chat:message")({
+      id: "test-player-3",
+      senderName: "Meeting Player",
+      text: "Private meeting message",
+      room: "Meeting Room",
+      scope: "room",
+    });
+  });
+  check(
+    "messages from another room are not rendered",
+    !roomChat.textContent.includes("Private meeting message") &&
+      !worldChat.textContent.includes("Private meeting message")
+  );
+  act(() => {
+    globalThis.__testSocket.__handlers.get("room:state")({
+      room: "Meeting Room",
+      players: [],
+    });
+  });
+  act(() => {
+    globalThis.__testSocket.__handlers.get("chat:message")({
+      id: "test-player-4",
+      senderName: "Meeting Player",
+      text: "Meeting Room hello",
+      room: "Meeting Room",
+      scope: "room",
+    });
+  });
+  check(
+    "Meeting Room messages render in Meeting Room Chat",
+    roomChat.getAttribute("aria-label") === "Meeting Room chat" &&
+      roomChat.textContent.includes("Meeting Room hello") &&
+      worldChat.textContent.includes("World hello")
+  );
+
   await act(async () => {
     root.unmount();
   });

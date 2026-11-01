@@ -19,8 +19,8 @@ npm test          # from the repo root: server suites + client suites
 ```
 
 The server runner executes 13 test scripts, including player persistence,
-reconnect claims, room changes, proximity, signaling authorization, chat,
-screen sharing, rate limits, layouts, and activity notifications. The client
+reconnect claims, room changes, proximity, signaling authorization, room/world
+chat delivery, screen sharing, rate limits, layouts, and activity notifications. The client
 runner executes activity tests, an app-rendering smoke test, and occlusion
 geometry tests.
 

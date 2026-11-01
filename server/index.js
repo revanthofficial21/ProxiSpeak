@@ -8,7 +8,7 @@ require("dotenv").config();
 const { MongoClient } = require("mongodb");
 const { createActivityNotification, getNewProximityEntries } = require("./activity");
 const { normalizeAvatarPrefs, saveAvatarPrefs } = require("./player-persistence");
-const { createChatMessage } = require("./lib/chat");
+const { createChatMessage, deliverChatMessage } = require("./lib/chat");
 const {
   buildDefaultLayout,
   getLayout,
@@ -726,8 +726,7 @@ io.on("connection", async (socket) => {
     });
   });
 
-  // World chat — broadcast a message to everyone in the world.
-  socket.on("chat:send", (text, callback) => {
+  const sendChatMessage = (scope, text, callback) => {
     if (!chatLimiter.take(socket.id)) {
       if (typeof callback === "function") {
         callback({ success: false, error: "Slow down — too many messages" });
@@ -753,24 +752,40 @@ io.on("connection", async (socket) => {
       senderId: socket.id,
       avatarColor: sender.avatarColor || DEFAULT_AVATAR_COLOR,
       room: sender.room,
+      scope,
       sentAt: new Date().toISOString(),
     };
 
-    // Chat is scoped to the sender's space. Guard the channel: roomChannel()
-    // returns null for an unknown room, and io.to(null) would silently drop it.
-    const channel = roomChannel(sender.room);
-    if (!channel) {
+    const channel = scope === "room" ? roomChannel(sender.room) : null;
+    const delivered = deliverChatMessage({
+      scope,
+      message,
+      room: channel,
+      emitWorld: (payload) => io.emit("chat:message", payload),
+      emitRoom: (room, payload) => {
+        io.to(room).emit("chat:message", payload);
+        return true;
+      },
+    });
+
+    if (!delivered) {
       if (typeof callback === "function") {
         callback({ success: false, error: "You are not in a valid space" });
       }
       return;
     }
 
-    io.to(channel).emit("chat:message", message);
-
     if (typeof callback === "function") {
       callback({ success: true });
     }
+  };
+
+  socket.on("chat:send", (text, callback) => {
+    sendChatMessage("room", text, callback);
+  });
+
+  socket.on("world-chat:send", (text, callback) => {
+    sendChatMessage("world", text, callback);
   });
 
   // Move to another space. Only people in the same space hear each other.

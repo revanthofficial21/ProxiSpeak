@@ -26,4 +26,24 @@ function createChatMessage(player, text, id) {
   };
 }
 
-module.exports = { createChatMessage, MAX_CHAT_MESSAGE_LENGTH };
+function deliverChatMessage({
+  scope,
+  message,
+  room,
+  emitWorld,
+  emitRoom,
+}) {
+  if (scope === "world") {
+    emitWorld(message);
+    return true;
+  }
+
+  if (scope !== "room" || !room) return false;
+  return emitRoom(room, message) !== false;
+}
+
+module.exports = {
+  createChatMessage,
+  deliverChatMessage,
+  MAX_CHAT_MESSAGE_LENGTH,
+};

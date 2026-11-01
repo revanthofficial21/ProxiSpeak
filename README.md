@@ -100,8 +100,9 @@ ProxiSpeak/
    100px $maxDistance to find who is within earshot, and emits
    player:nearby and proximity:enter / proximity:leave only for valid
    same-room peers.
-5. Chat. Messages remain scoped to the sender's room; players in other rooms
-   receive unread counts, which clear when they open that room.
+5. Chat. World Chat broadcasts globally. Room chat is delivered only to
+   players in the sender's current room; players in other rooms receive unread
+   counts, which clear when they open that room.
 6. Signaling. Clients exchange webrtc:offer / webrtc:answer / webrtc:ice
    through the server, which relays only between same-room nearby players or
    members of a validated Meeting Room call.
@@ -144,7 +145,8 @@ player:setName	name
 player:setAvatarPrefs	{ color }
 player:joinRoom	allow-listed room name
 meeting:join / meeting:leave	join or leave the Meeting Room call
-chat:send	message text
+chat:send	message text (current room)
+world-chat:send	message text (World Chat)
 player:move	{ x, y }
 webrtc:offer	{ to, sdp }
 webrtc:answer	{ to, sdp }
@@ -158,7 +160,7 @@ meeting:participant-joined / meeting:participant-left	participant / socket id
 player:joined / player:moved / player:left	player / id
 player:renamed	player
 player:avatarPrefs	player
-chat:message	room-scoped chat message
+chat:message	chat message with `scope` set to `room` or `world`
 chat:unread	{ room } for a message in a different room
 presence:state	online players with their current room
 activity:notification	validated activity item with type, player name, room, message, and server timestamp
