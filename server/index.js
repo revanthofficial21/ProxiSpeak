@@ -6,40 +6,43 @@ const cors = require("cors");
 const { Server } = require("socket.io");
 require("dotenv").config();
 const { MongoClient } = require("mongodb");
+const { createActivityNotification, getNewProximityEntries } = require("./activity");
+const { normalizeAvatarPrefs, saveAvatarPrefs } = require("./player-persistence");
+const { createChatMessage } = require("./lib/chat");
 const {
-  createActivityNotification,
-  createRoomSwitchNotification,
-  getNewProximityEntries,
-  isCurrentPlayerSession,
-} = require("./activity");
+  buildDefaultLayout,
+  getLayout,
+  initializeLayouts,
+} = require("./lib/layouts");
 const {
-  markPlayerConnected,
-  markPlayerDisconnected,
-  normalizeAvatarPrefs,
-  normalizePlayerName,
-  positionFields,
-  restoreReturningPlayer,
-  savePlayerPosition,
-  saveAvatarPrefs,
-} = require("./player-persistence");
-const {
-  createChatMessage,
-  createChatUnreadNotification,
-} = require("./chat");
-const {
-  DEFAULT_ROOM,
-  normalizeRoomName,
-  roomChannel,
-  getPlayersInRoom,
-  getPresenceSnapshot,
-  getNearbyPlayersInRoom,
-} = require("./rooms");
-const {
-  MEETING_ROOM,
   canJoinMeetingCall,
   getMeetingCallParticipants,
-  canRelayWebRtcSignal,
-} = require("./meeting-call");
+  MEETING_ROOM,
+  relayWebRtcSignal,
+} = require("./lib/meeting-call");
+const { attachMesh } = require("./lib/mesh");
+const { initializeRoomCatalog } = require("./lib/roomCatalog");
+const { createRateLimiter } = require("./lib/rate-limit");
+const { registerScreenShareHandlers } = require("./lib/screen-share");
+const {
+  changePlayerRoom,
+  createPlayerPersistenceQueue,
+  markPlayerConnected,
+  markPlayerDisconnected,
+  restoreReturningPlayer,
+  savePlayerPosition,
+} = require("./lib/player-persistence");
+const {
+  allocateSpawnPosition: pickSpawnPosition,
+  clampPosition,
+} = require("./lib/session");
+const {
+  DEFAULT_ROOM,
+  getNearbyPlayersInRoom,
+  getPlayersInRoom,
+  normalizeRoomName,
+  roomChannel,
+} = require("./lib/rooms");
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -49,28 +52,69 @@ const mongoClient = new MongoClient(process.env.MONGODB_URI, {
 });
 
 let db;
+let mesh = null;
+let availableRooms = [];
 
-app.use(cors());
+// Browser origins allowed to connect. Comma-separated; "*" allows any origin,
+// which is convenient locally but should be set explicitly in production.
+const allowedOrigins = (process.env.CORS_ORIGIN || "*")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const corsOrigin = allowedOrigins.includes("*") ? true : allowedOrigins;
+
+app.use(cors({ origin: corsOrigin }));
 app.use(express.json());
+
+// The room catalog. This is a list only — players are not yet scoped to a
+// room, so everyone still shares one world.
+app.get("/api/rooms", (req, res) => {
+  res.json({ rooms: availableRooms });
+});
+
+// The furniture and zones for one room, so the client does not have to hard-code
+// them. Falls back to the built-in layout if the document is missing or broken.
+app.get("/api/rooms/:id/layout", async (req, res) => {
+  try {
+    const layout = await getLayout(db, req.params.id);
+    res.json({ layout });
+  } catch (error) {
+    console.error("Could not load the room layout:", error.message);
+    res.status(500).json({ error: "Could not load the room layout." });
+  }
+});
 
 const io = new Server(httpServer, {
   cors: {
-    origin: ["http://localhost:5173", "http://localhost:5174"],
+    origin: corsOrigin,
     methods: ["GET", "POST"],
   },
 });
 
 const players = new Map();
 
+// Movement arrives ~25 times a second from an honest client; the burst is
+// generous but a flood is cut off. Chat is deliberately much stricter.
+const moveLimiter = createRateLimiter({ capacity: 80, refillPerSecond: 50 });
+const chatLimiter = createRateLimiter({ capacity: 5, refillPerSecond: 1 });
+
 // Tracks which players are currently within proximity of each other.
 // Drives the enter/leave events and gates the WebRTC signaling relay.
 const proximityState = new Map();
 const nearbyPayloadState = new Map();
 const meetingCallParticipants = new Set();
+const activeShares = new Map();
+const enqueuePlayerPersistence = createPlayerPersistenceQueue();
 
 const WORLD_WIDTH = 1000;
 const WORLD_HEIGHT = 600;
 const PROXIMITY_RADIUS = 100;
+// Hysteresis: connect at 100px, but only disconnect past 115px.
+const PROXIMITY_LEAVE_RADIUS = 115;
+// Cap on how many peers one client connects to — the mesh must stay bounded.
+const MAX_MESH_PEERS = 8;
+const DEFAULT_AVATAR_COLOR = "#6ee7b7";
+const HEX_COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const PLAYER_RADIUS = 20;
 const SPAWN_SPACINGS = [80, 60, 40];
 const SPAWN_MARGIN = PLAYER_RADIUS + 20;
@@ -103,38 +147,21 @@ function publishActivityToPlayer(playerId, notification) {
   }
 }
 
+// The placement rules live in lib/session.js; this only supplies the world.
 function allocateSpawnPosition() {
-  const occupiedPositions = Array.from(spawnSlots.values());
-  const minimumSpacing = PLAYER_RADIUS * 2 + 8;
-
-  for (const spacing of SPAWN_SPACINGS) {
-    const columns = Math.floor((WORLD_WIDTH - SPAWN_MARGIN * 2) / spacing) + 1;
-    const rows = Math.floor((WORLD_HEIGHT - SPAWN_MARGIN * 2) / spacing) + 1;
-
-    for (let row = 0; row < rows; row += 1) {
-      for (let column = 0; column < columns; column += 1) {
-        const position = {
-          x: SPAWN_MARGIN + column * spacing,
-          y: SPAWN_MARGIN + row * spacing,
-        };
-        const isAvailable = occupiedPositions.every(
-          (occupied) =>
-            Math.hypot(position.x - occupied.x, position.y - occupied.y) >=
-            minimumSpacing
-        );
-
-        if (isAvailable) return position;
-      }
-    }
-  }
-
-  return {
-    x: SPAWN_MARGIN + (spawnSlots.size % (WORLD_WIDTH - SPAWN_MARGIN * 2)),
-    y:
-      SPAWN_MARGIN +
-      (Math.floor(spawnSlots.size / (WORLD_WIDTH - SPAWN_MARGIN * 2)) %
-        (WORLD_HEIGHT - SPAWN_MARGIN * 2)),
-  };
+  return pickSpawnPosition({
+    occupied: Array.from(spawnSlots.values()),
+    usedCount: spawnSlots.size,
+    width: WORLD_WIDTH,
+    height: WORLD_HEIGHT,
+    radius: PLAYER_RADIUS,
+    spacings: SPAWN_SPACINGS,
+    margin: SPAWN_MARGIN,
+    obstacles: buildDefaultLayout(DEFAULT_ROOM).furniture,
+    // Spread arrivals out — taking the first free slot stacks everyone in the
+    // top-left corner, which looks broken once two or three people join.
+    pick: (slots) => slots[Math.floor(Math.random() * slots.length)],
+  });
 }
 
 app.get("/", (req, res) => {
@@ -145,52 +172,48 @@ app.get("/", (req, res) => {
 });
 
 function publicPlayer(player) {
-  return {
-    id: player.id,
-    name: player.name,
-    x: player.x,
-    y: player.y,
-    avatarPrefs: player.avatarPrefs,
-  };
-}
-
-function emitPresenceState() {
-  io.emit("presence:state", getPresenceSnapshot(players));
+  return { id: player.id, name: player.name, x: player.x, y: player.y };
 }
 
 function hasSameNearbyPlayers(previous, next) {
-  return Boolean(
-    previous &&
-      previous.length === next.length &&
-      previous.every((player, index) => {
-        const nextPlayer = next[index];
-        return (
-          player.id === nextPlayer.id &&
-          player.name === nextPlayer.name &&
-          player.x === nextPlayer.x &&
-          player.y === nextPlayer.y &&
-          player.distance === nextPlayer.distance &&
-          player.avatarPrefs?.color === nextPlayer.avatarPrefs?.color
-        );
-      })
+  return (
+    Array.isArray(previous) &&
+    previous.length === next.length &&
+    previous.every((player, index) => {
+      const nextPlayer = next[index];
+      return (
+        player.id === nextPlayer.id &&
+        player.name === nextPlayer.name &&
+        player.distance === nextPlayer.distance &&
+        player.x === nextPlayer.x &&
+        player.y === nextPlayer.y
+      );
+    })
   );
 }
 
-// Relay a WebRTC signal to a peer, but only when the two are within proximity.
-function relaySignal(event, fromId, toId, payload) {
-  if (
-    !canRelayWebRtcSignal(
-      fromId,
-      toId,
-      players,
-      proximityState,
-      meetingCallParticipants
-    )
-  ) {
-    return;
-  }
+function emitPresenceState() {
+  io.emit(
+    "presence:state",
+    Array.from(players.values())
+      .filter((player) => normalizeRoomName(player.room))
+      .map(({ id, name, room }) => ({ id, name, room }))
+  );
+}
 
-  io.to(toId).emit(event, { ...payload, from: fromId });
+// Relay a WebRTC signal to a peer, but only when the two are in the same space
+// and within proximity (or are members of the meeting call).
+function relaySignal(event, fromId, toId, payload) {
+  return relayWebRtcSignal({
+    io,
+    event,
+    fromId,
+    toId,
+    payload,
+    players,
+    proximityState,
+    meetingCallParticipants,
+  });
 }
 
 // Use MongoDB's spatial index for candidates, then enforce live room membership.
@@ -304,430 +327,183 @@ io.on("connection", async (socket) => {
     id: socket.id,
     socketId: socket.id,
     name: "",
-    avatarPrefs: { color: "mint" },
     room: DEFAULT_ROOM,
     ...spawnPosition,
   };
 
   players.set(socket.id, player);
-  await socket.join(roomChannel(player.room));
-  emitPresenceState();
 
-  // Save the player's initial position.
-  const playerCollection = db.collection("players");
-  const initialPlayerSave = markPlayerConnected(playerCollection, player);
-  initialPlayerSave
-    .then(() => {
-      const connectedPlayer = players.get(socket.id);
-      if (connectedPlayer) {
-        return updatePlayerProximity(socket, connectedPlayer);
-      }
-      return undefined;
-    })
-    .catch((error) => {
-      console.error(
-        "Failed to save player or initialize proximity:",
-        error.message
-      );
-    });
+  const playerChannel = roomChannel(player.room);
+  if (playerChannel) {
+    const joinResult = socket.join(playerChannel);
+    if (joinResult && typeof joinResult.catch === "function") {
+      joinResult.catch((error) => {
+        console.error("Failed to join player room:", error.message);
+      });
+    }
+  }
 
+  const playerPersistenceReady = markPlayerConnected(
+    db.collection("players"),
+    player
+  );
+  playerPersistenceReady.catch((error) => {
+    console.error(
+      "Failed to save player or initialize proximity:",
+      error.message
+    );
+  });
+
+  socket.emit("world:state", Array.from(players.values()));
   socket.emit("room:state", {
     room: player.room,
     players: getPlayersInRoom(players, player.room).map(publicPlayer),
   });
-  socket.to(roomChannel(player.room)).emit("player:joined", publicPlayer(player));
-  publishActivityToRoom(
-    player.room,
-    createActivityNotification(
-      "player-joined",
-      player,
-      player.room,
-      nextActivityId()
-    ),
-    socket.id
-  );
+  socket.broadcast.emit("player:joined", player);
 
   // WebRTC signaling is limited to same-room proximity peers or call members.
   socket.on("webrtc:offer", (data) => {
-    if (
-      !data ||
-      !data.sdp ||
-      typeof data.sdp.type !== "string" ||
-      typeof data.sdp.sdp !== "string"
-    ) {
-      return;
-    }
     relaySignal("webrtc:offer", socket.id, data && data.to, {
       sdp: data && data.sdp,
     });
   });
 
   socket.on("webrtc:answer", (data) => {
-    if (
-      !data ||
-      !data.sdp ||
-      typeof data.sdp.type !== "string" ||
-      typeof data.sdp.sdp !== "string"
-    ) {
-      return;
-    }
     relaySignal("webrtc:answer", socket.id, data && data.to, {
       sdp: data && data.sdp,
     });
   });
 
   socket.on("webrtc:ice", (data) => {
-    if (!data || typeof data.candidate?.candidate !== "string") return;
     relaySignal("webrtc:ice", socket.id, data && data.to, {
       candidate: data && data.candidate,
     });
   });
 
-  socket.on("webrtc:leave", () => {
-    const nearSet = proximityState.get(socket.id);
-    if (!nearSet) return;
-
-    for (const peerId of nearSet) {
-      if (
-        meetingCallParticipants.has(socket.id) &&
-        meetingCallParticipants.has(peerId)
-      ) {
-        continue;
-      }
-      io.to(peerId).emit("webrtc:leave", { from: socket.id });
-    }
-  });
-
-  socket.on("meeting:join", async (callback) => {
-    const currentPlayer = players.get(socket.id);
-    if (
-      !canJoinMeetingCall(currentPlayer) ||
-      socket.data.roomSwitching ||
-      socket.data.meetingJoinPending
-    ) {
-      if (typeof callback === "function") {
-        callback({
-          success: false,
-          error: socket.data.meetingJoinPending
-            ? "Meeting call request already in progress"
-            : "Join the Meeting Room before starting a call",
-        });
-      }
-      return;
-    }
-
-    const alreadyJoined = meetingCallParticipants.has(socket.id);
-    socket.data.meetingJoinPending = true;
-    try {
-      await socket.join(`meeting-call:${MEETING_ROOM}`);
-      if (
-        players.get(socket.id) !== currentPlayer ||
-        !canJoinMeetingCall(currentPlayer) ||
-        socket.data.roomSwitching
-      ) {
-        await socket.leave(`meeting-call:${MEETING_ROOM}`);
+  // Save the player's name.
+  socket.on("player:setName", (name, callback) => {
+    enqueuePlayerPersistence(socket.id, async () => {
+      const normalizedName =
+        typeof name === "string" ? name.trim().slice(0, 30) : "";
+      if (!normalizedName) {
         if (typeof callback === "function") {
           callback({
             success: false,
-            error: "Join the Meeting Room before starting a call",
+            error: "Invalid player name",
           });
         }
         return;
       }
 
-      meetingCallParticipants.add(socket.id);
-      const participants = getMeetingCallParticipants(
-        meetingCallParticipants,
-        players
-      );
-      if (typeof callback === "function") {
-        callback({ success: true, participants });
-      }
-      if (!alreadyJoined) {
-        socket.to(`meeting-call:${MEETING_ROOM}`).emit(
-          "meeting:participant-joined",
-          {
-            id: currentPlayer.id,
-            name: currentPlayer.name || `Player ${currentPlayer.id.slice(0, 4)}`,
-          }
-        );
-      }
-    } catch (error) {
-      meetingCallParticipants.delete(socket.id);
-      await socket.leave(`meeting-call:${MEETING_ROOM}`);
-      console.error("Failed to join meeting call:", error.message);
-      if (typeof callback === "function") {
-        callback({ success: false, error: "Could not join meeting call" });
-      }
-    } finally {
-      socket.data.meetingJoinPending = false;
-    }
-  });
-
-  socket.on("meeting:leave", async () => {
-    try {
-      await leaveMeetingCall(socket);
-    } catch (error) {
-      console.error("Failed to leave meeting call:", error.message);
-    }
-  });
-
-  socket.on("chat:send", (text, callback) => {
-    if (socket.data.roomSwitching) {
-      if (typeof callback === "function") {
-        callback({ success: false, error: "Room switch in progress" });
-      }
-      return;
-    }
-    // Look the sender up ONCE — calling players.get() three times risks a
-    // mid-handler disconnect turning .room into a TypeError.
-    const sender = players.get(socket.id);
-    const message = createChatMessage(sender, text, chatMessageId + 1);
-    if (!message) {
-      if (typeof callback === "function") {
-        callback({
-          success: false,
-          error: "Message must contain 1 to 500 characters",
-        });
-      }
-      return;
-    }
-
-    const channel = roomChannel(sender.room);
-    if (!channel) {
-      if (typeof callback === "function") {
-        callback({ success: false, error: "You are not in a valid space" });
-      }
-      return;
-    }
-
-    chatMessageId = message.id;
-    io.to(channel).emit("chat:message", {
-      ...message,
-      room: sender.room,
-    });
-    const unreadNotification = createChatUnreadNotification(
-      players.get(socket.id).room
-    );
-    if (unreadNotification) {
-      io.except(roomChannel(unreadNotification.room)).emit(
-        "chat:unread",
-        unreadNotification
-      );
-    }
-    if (typeof callback === "function") {
-      callback({ success: true });
-    }
-  });
-
-  socket.on("player:joinRoom", async (requestedRoom, callback) => {
-    const roomName = normalizeRoomName(requestedRoom);
-    const currentPlayer = players.get(socket.id);
-    const reply = (response) => {
-      if (typeof callback === "function") callback(response);
-    };
-
-    if (!roomName) {
-      reply({ success: false, error: "Invalid room" });
-      return;
-    }
-    if (!currentPlayer) {
-      reply({ success: false, error: "Player not found" });
-      return;
-    }
-    if (socket.data.roomSwitching) {
-      reply({ success: false, error: "Room switch already in progress" });
-      return;
-    }
-    if (currentPlayer.room === roomName) {
-      reply({ success: true, room: roomName });
-      return;
-    }
-
-    socket.data.roomSwitching = true;
-    const previousRoom = currentPlayer.room;
-    const previousChannel = roomChannel(previousRoom);
-    const nextChannel = roomChannel(roomName);
-
-    try {
-      await socket.join(nextChannel);
-      if (players.get(socket.id) !== currentPlayer) {
-        await socket.leave(nextChannel);
-        reply({ success: false, error: "Player session is no longer active" });
-        return;
-      }
-      await leaveMeetingCall(socket);
-      if (players.get(socket.id) !== currentPlayer) {
-        await socket.leave(nextChannel);
-        reply({ success: false, error: "Player session is no longer active" });
-        return;
-      }
-      await socket.leave(previousChannel);
-      if (players.get(socket.id) !== currentPlayer) {
-        await socket.leave(nextChannel);
-        reply({ success: false, error: "Player session is no longer active" });
-        return;
-      }
-
-      const nearSet = proximityState.get(socket.id);
-      if (nearSet) {
-        for (const peerId of nearSet) {
-          io.to(peerId).emit("proximity:leave", socket.id);
-          const peerSet = proximityState.get(peerId);
-          if (peerSet) peerSet.delete(socket.id);
-        }
-        proximityState.delete(socket.id);
-      }
-      nearbyPayloadState.delete(socket.id);
-
-      socket.to(previousChannel).emit("player:left", socket.id);
-      currentPlayer.room = roomName;
-      players.set(socket.id, currentPlayer);
-      emitPresenceState();
-      socket.emit("room:state", {
-        room: roomName,
-        players: getPlayersInRoom(players, roomName).map(publicPlayer),
-      });
-      socket.to(nextChannel).emit("player:joined", publicPlayer(currentPlayer));
-      const roomSwitchNotification = createRoomSwitchNotification(
-        currentPlayer,
-        previousRoom,
-        roomName,
-        nextActivityId()
-      );
-      publishActivityToRoom(previousRoom, roomSwitchNotification, socket.id);
-      if (roomName !== previousRoom) {
-        publishActivityToRoom(roomName, roomSwitchNotification, socket.id);
-      }
-      updatePlayerProximity(socket, currentPlayer).catch((error) => {
-        console.error(
-          "Failed to update proximity after room switch:",
-          error.message
-        );
-      });
-      reply({ success: true, room: roomName });
-    } catch (error) {
-      await socket.leave(nextChannel);
-      console.error("Failed to switch player room:", error.message);
-      reply({ success: false, error: "Could not switch rooms" });
-    } finally {
-      socket.data.roomSwitching = false;
-    }
-  });
-
-  // Save the player's name.
-  socket.on("player:setName", async (name, callback) => {
-    const normalizedName = normalizePlayerName(name);
-    if (!normalizedName) {
-      if (typeof callback === "function") {
-        callback({
-          success: false,
-          error: "Invalid player name",
-        });
-      }
-      return;
-    }
-
-    const currentPlayer = players.get(socket.id);
-
-    if (!currentPlayer) {
-      if (typeof callback === "function") {
-        callback({
-          success: false,
-          error: "Player not found",
-        });
-      }
-      return;
-    }
-
-    try {
-      await initialPlayerSave;
-      if (!socket.connected || players.get(socket.id) !== currentPlayer) {
+      const currentPlayer = players.get(socket.id);
+      if (!currentPlayer) {
         if (typeof callback === "function") {
-          callback({ success: false, error: "Player session is no longer active" });
+          callback({
+            success: false,
+            error: "Player not found",
+          });
         }
         return;
       }
-      // No session/transaction: a single-document claim is atomic on its own,
-      // so this works on a standalone MongoDB too (transactions need a replica
-      // set).
+
+      await playerPersistenceReady;
+      const collection = db.collection("players");
       const returningPlayer = await restoreReturningPlayer(
-        playerCollection,
+        collection,
         normalizedName,
         socket.id,
-        (savedPlayer) => ({
-          x: Math.max(
-            PLAYER_RADIUS,
-            Math.min(WORLD_WIDTH - PLAYER_RADIUS, savedPlayer.x)
-          ),
-          y: Math.max(
-            PLAYER_RADIUS,
-            Math.min(WORLD_HEIGHT - PLAYER_RADIUS, savedPlayer.y)
-          ),
-        })
+        ({ x, y }) =>
+          clampPosition(x, y, {
+            width: WORLD_WIDTH,
+            height: WORLD_HEIGHT,
+            radius: PLAYER_RADIUS,
+          })
       );
+
+      const updatedPlayer = { ...currentPlayer, name: normalizedName };
+      if (returningPlayer) {
+        updatedPlayer.room =
+          normalizeRoomName(returningPlayer.room) || updatedPlayer.room;
+        updatedPlayer.x = returningPlayer.x;
+        updatedPlayer.y = returningPlayer.y;
+        updatedPlayer.avatarPrefs = returningPlayer.avatarPrefs;
+      } else {
+        await markPlayerConnected(collection, updatedPlayer);
+      }
+
+      if (!socket.connected || players.get(socket.id) !== currentPlayer) {
+        if (typeof callback === "function") {
+          callback({
+            success: false,
+            error: "Player session is no longer active",
+          });
+        }
+        return;
+      }
+
+      const previousChannel = roomChannel(currentPlayer.room);
+      const nextChannel = roomChannel(updatedPlayer.room);
+      if (nextChannel && nextChannel !== previousChannel) {
+        if (returningPlayer) {
+          try {
+            await changePlayerRoom({
+              socket,
+              previousRoom: currentPlayer.room,
+              previousChannel,
+              nextRoom: updatedPlayer.room,
+              nextChannel,
+              persistRoom: async () => {},
+            });
+          } catch (error) {
+            await markPlayerDisconnected(collection, socket.id).catch(
+              (disconnectError) => {
+                console.error(
+                  "Failed to release returning player after room restore failure:",
+                  disconnectError.message
+                );
+              }
+            );
+            throw error;
+          }
+        } else {
+          await socket.join(nextChannel);
+          if (previousChannel) await socket.leave(previousChannel);
+        }
+      }
 
       if (!socket.connected || players.get(socket.id) !== currentPlayer) {
         if (returningPlayer) {
-          await markPlayerDisconnected(playerCollection, socket.id);
+          await markPlayerDisconnected(collection, socket.id);
         }
-        if (typeof callback === "function") {
-          callback({ success: false, error: "Player session is no longer active" });
-        }
-        return;
-      }
-
-      let result;
-      if (returningPlayer) {
-        currentPlayer.x = returningPlayer.x;
-        currentPlayer.y = returningPlayer.y;
-        currentPlayer.avatarPrefs =
-          normalizeAvatarPrefs(returningPlayer.avatarPrefs) || {
-            color: "mint",
-          };
-        spawnSlots.set(socket.id, { x: currentPlayer.x, y: currentPlayer.y });
-        result = { matchedCount: 1 };
-      } else {
-        result = await playerCollection.updateOne(
-          { socketId: socket.id, connected: true },
-          {
-            $set: {
-              name: normalizedName,
-              ...positionFields(currentPlayer.x, currentPlayer.y),
-              updatedAt: new Date(),
-              connected: true,
-            },
-          }
-        );
-      }
-
-      console.log("Player name:", normalizedName);
-      console.log("MongoDB matched:", result.matchedCount);
-
-      if (result.matchedCount === 0) {
         if (typeof callback === "function") {
           callback({
             success: false,
-            error: "Player record not found in MongoDB",
+            error: "Player session is no longer active",
           });
         }
         return;
       }
 
-      if (!socket.connected || players.get(socket.id) !== currentPlayer) {
-        if (typeof callback === "function") {
-          callback({ success: false, error: "Player session is no longer active" });
-        }
-        return;
-      }
-
-      currentPlayer.name = normalizedName;
-      players.set(socket.id, currentPlayer);
-      emitToRoom(currentPlayer.room, "player:renamed", publicPlayer(currentPlayer));
+      players.set(socket.id, updatedPlayer);
+      emitToRoom(
+        updatedPlayer.room,
+        "player:renamed",
+        publicPlayer(updatedPlayer)
+      );
       emitPresenceState();
       if (returningPlayer) {
-        emitToRoom(currentPlayer.room, "player:moved", publicPlayer(currentPlayer));
-        updatePlayerProximity(socket, currentPlayer).catch((error) => {
+        socket.emit("room:state", {
+          room: updatedPlayer.room,
+          players: getPlayersInRoom(players, updatedPlayer.room).map(
+            publicPlayer
+          ),
+        });
+        emitToRoom(
+          updatedPlayer.room,
+          "player:moved",
+          publicPlayer(updatedPlayer)
+        );
+        updatePlayerProximity(socket, updatedPlayer).catch((error) => {
           console.error(
             "Failed to update proximity after player restore:",
             error.message
@@ -738,24 +514,20 @@ io.on("connection", async (socket) => {
       if (typeof callback === "function") {
         callback({
           success: true,
-          name: currentPlayer.name,
+          name: updatedPlayer.name,
           restored: Boolean(returningPlayer),
-          avatarPrefs: currentPlayer.avatarPrefs,
+          avatarPrefs: updatedPlayer.avatarPrefs,
           position: returningPlayer
-            ? { x: currentPlayer.x, y: currentPlayer.y }
+            ? { x: updatedPlayer.x, y: updatedPlayer.y }
             : undefined,
         });
       }
-    } catch (error) {
+    }).catch((error) => {
       console.error("Failed to save player name:", error.message);
-
       if (typeof callback === "function") {
-        callback({
-          success: false,
-          error: error.message,
-        });
+        callback({ success: false, error: error.message });
       }
-    }
+    });
   });
 
   socket.on("player:setAvatarPrefs", async (avatarPrefs, callback) => {
@@ -783,7 +555,7 @@ io.on("connection", async (socket) => {
 
     try {
       const result = await saveAvatarPrefs(
-        playerCollection,
+        db.collection("players"),
         socket.id,
         normalizedPrefs
       );
@@ -832,86 +604,344 @@ io.on("connection", async (socket) => {
   });
 
   // Persist position before publishing it or refreshing indexed proximity.
-  socket.on("player:move", async (position) => {
-    if (
-      !position ||
-      !Number.isFinite(position.x) ||
-      !Number.isFinite(position.y)
-    ) {
-      return;
-    }
-
-    const currentPlayer = players.get(socket.id);
-    if (!currentPlayer) return;
-    if (socket.data.roomSwitching) return;
-
-    const updatedPlayer = {
-      ...currentPlayer,
-      x: Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, position.x)),
-      y: Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, position.y)),
-    };
-
-    if (
-      updatedPlayer.x === currentPlayer.x &&
-      updatedPlayer.y === currentPlayer.y
-    ) {
-      return;
-    }
-
-    players.set(socket.id, updatedPlayer);
-
-    try {
-      const positionSave = await savePlayerPosition(
-        db.collection("players"),
-        socket.id,
-        updatedPlayer
-      );
-      if (positionSave.matchedCount !== 1) return;
-
+  socket.on("player:move", (position) => {
+    enqueuePlayerPersistence(socket.id, async () => {
       if (
-        players.get(socket.id) !== updatedPlayer ||
-        players.get(socket.id)?.room !== updatedPlayer.room
+        !position ||
+        !Number.isFinite(position.x) ||
+        !Number.isFinite(position.y)
       ) {
         return;
       }
 
-      emitToRoom(updatedPlayer.room, "player:moved", publicPlayer(updatedPlayer));
+      if (!moveLimiter.take(socket.id)) return;
 
-      await updatePlayerProximity(socket, updatedPlayer);
-    } catch (error) {
+      const currentPlayer = players.get(socket.id);
+      if (!currentPlayer) return;
+      if (socket.data.roomSwitching) return;
+
+      const updatedPlayer = {
+        ...currentPlayer,
+        ...clampPosition(position.x, position.y, {
+          width: WORLD_WIDTH,
+          height: WORLD_HEIGHT,
+          radius: PLAYER_RADIUS,
+        }),
+      };
+
+      if (
+        updatedPlayer.x === currentPlayer.x &&
+        updatedPlayer.y === currentPlayer.y
+      ) {
+        return;
+      }
+
+      try {
+        await playerPersistenceReady;
+        await savePlayerPosition(
+          db.collection("players"),
+          socket.id,
+          updatedPlayer
+        );
+
+        if (players.get(socket.id) !== currentPlayer) return;
+        players.set(socket.id, updatedPlayer);
+
+        io.emit("player:moved", updatedPlayer);
+
+        // Find connected players within 100 pixels.
+        const nearbyPlayers = await db
+          .collection("players")
+          .find({
+            socketId: { $ne: socket.id },
+            connected: true,
+            location: {
+              $near: [updatedPlayer.x, updatedPlayer.y],
+              $maxDistance: PROXIMITY_RADIUS,
+            },
+          })
+          .project({
+            _id: 0,
+            socketId: 1,
+            name: 1,
+            x: 1,
+            y: 1,
+          })
+          .toArray();
+
+        const nearbyList = nearbyPlayers.map((nearbyPlayer) => ({
+          id: nearbyPlayer.socketId,
+          socketId: nearbyPlayer.socketId,
+          name: nearbyPlayer.name,
+          x: nearbyPlayer.x,
+          y: nearbyPlayer.y,
+        }));
+
+        socket.emit("player:nearby", nearbyList);
+
+        // Proximity transitions: tell both sides who just entered / left range.
+        const newNearby = new Set(nearbyList.map((p) => p.id));
+        const oldNearby = proximityState.get(socket.id) || new Set();
+
+        for (const id of newNearby) {
+          if (oldNearby.has(id)) continue;
+
+          socket.emit("proximity:enter", nearbyList.find((p) => p.id === id));
+          io.to(id).emit("proximity:enter", publicPlayer(updatedPlayer));
+
+          const peerSet = proximityState.get(id) || new Set();
+          peerSet.add(socket.id);
+          proximityState.set(id, peerSet);
+        }
+
+        for (const id of oldNearby) {
+          if (newNearby.has(id)) continue;
+
+          socket.emit("proximity:leave", id);
+          io.to(id).emit("proximity:leave", socket.id);
+
+          const peerSet = proximityState.get(id);
+          if (peerSet) peerSet.delete(socket.id);
+        }
+
+        proximityState.set(socket.id, newNearby);
+
+        console.log(
+          "Nearby players for",
+          updatedPlayer.name || updatedPlayer.id,
+          ":",
+          nearbyList.length
+        );
+      } catch (error) {
+        console.error(
+          "Failed to update position/find nearby players:",
+          error.message
+        );
+      }
+    }).catch((error) => {
       console.error(
-        "Failed to update position/find nearby players:",
+        "Player persistence queue failed during movement:",
         error.message
       );
+    });
+  });
+
+  // World chat — broadcast a message to everyone in the world.
+  socket.on("chat:send", (text, callback) => {
+    if (!chatLimiter.take(socket.id)) {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "Slow down — too many messages" });
+      }
+      return;
+    }
+
+    const sender = players.get(socket.id);
+    const base = createChatMessage(sender, text, `${socket.id}-${Date.now()}`);
+
+    if (!base) {
+      if (typeof callback === "function") {
+        callback({
+          success: false,
+          error: "Message must be 1 to 500 characters",
+        });
+      }
+      return;
+    }
+
+    const message = {
+      ...base,
+      senderId: socket.id,
+      avatarColor: sender.avatarColor || DEFAULT_AVATAR_COLOR,
+      room: sender.room,
+      sentAt: new Date().toISOString(),
+    };
+
+    // Chat is scoped to the sender's space. Guard the channel: roomChannel()
+    // returns null for an unknown room, and io.to(null) would silently drop it.
+    const channel = roomChannel(sender.room);
+    if (!channel) {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "You are not in a valid space" });
+      }
+      return;
+    }
+
+    io.to(channel).emit("chat:message", message);
+
+    if (typeof callback === "function") {
+      callback({ success: true });
     }
   });
+
+  // Move to another space. Only people in the same space hear each other.
+  socket.on("player:joinRoom", (requestedRoom, callback) => {
+    enqueuePlayerPersistence(socket.id, async () => {
+      const reply = (response) => {
+        if (typeof callback === "function") callback(response);
+      };
+
+      const currentPlayer = players.get(socket.id);
+      const roomName = normalizeRoomName(requestedRoom);
+
+      if (!roomName) {
+        reply({ success: false, error: "Unknown space" });
+        return;
+      }
+      if (!currentPlayer) {
+        reply({ success: false, error: "Player not found" });
+        return;
+      }
+      if (currentPlayer.room === roomName) {
+        reply({ success: true, room: roomName });
+        return;
+      }
+
+      const previousChannel = roomChannel(currentPlayer.room);
+      const nextChannel = roomChannel(roomName);
+
+      try {
+        await changePlayerRoom({
+          socket,
+          previousRoom: currentPlayer.room,
+          previousChannel,
+          nextRoom: roomName,
+          nextChannel,
+          persistRoom: async (room) => {
+            await playerPersistenceReady;
+            await savePlayerPosition(db.collection("players"), socket.id, {
+              ...currentPlayer,
+              room,
+            });
+          },
+        });
+      } catch (error) {
+        console.error("Failed to save player room:", error.message);
+        reply({ success: false, error: error.message });
+        return;
+      }
+
+      if (!socket.connected || players.get(socket.id) !== currentPlayer) {
+        reply({
+          success: false,
+          error: "Player session is no longer active",
+        });
+        return;
+      }
+
+      meetingCallParticipants.delete(socket.id);
+
+      // Drop proximity to everyone in the old space.
+      const nearSet = proximityState.get(socket.id);
+      if (nearSet) {
+        for (const peerId of nearSet) {
+          io.to(peerId).emit("proximity:leave", socket.id);
+          const peerSet = proximityState.get(peerId);
+          if (peerSet) peerSet.delete(socket.id);
+        }
+        proximityState.delete(socket.id);
+      }
+
+      currentPlayer.room = roomName;
+      players.set(socket.id, currentPlayer);
+
+      socket.emit("room:state", {
+        room: roomName,
+        players: getPlayersInRoom(players, roomName).map(publicPlayer),
+      });
+      reply({ success: true, room: roomName });
+
+      try {
+        await updatePlayerProximity(socket, currentPlayer);
+      } catch (error) {
+        console.error(
+          "Failed to update proximity after room switch:",
+          error.message
+        );
+      }
+    }).catch((error) => {
+      console.error(
+        "Player persistence queue failed during room change:",
+        error.message
+      );
+      if (typeof callback === "function") {
+        callback({ success: false, error: error.message });
+      }
+    });
+  });
+
+  // Join the Meeting Room call — talk to room-mates regardless of distance.
+  socket.on("meeting:join", (callback) => {
+    const reply = (response) => {
+      if (typeof callback === "function") callback(response);
+    };
+
+    const currentPlayer = players.get(socket.id);
+    if (!canJoinMeetingCall(currentPlayer)) {
+      reply({ success: false, error: "Join the Meeting Room first" });
+      return;
+    }
+
+    meetingCallParticipants.add(socket.id);
+    const participants = getMeetingCallParticipants(
+      meetingCallParticipants,
+      players
+    );
+
+    const channel = roomChannel(currentPlayer.room);
+    if (channel) {
+      socket.to(channel).emit("meeting:participant-joined", {
+        id: currentPlayer.id,
+        name: currentPlayer.name || `Player ${currentPlayer.id.slice(0, 4)}`,
+      });
+    }
+
+    reply({ success: true, participants });
+  });
+
+  socket.on("meeting:leave", (callback) => {
+    const currentPlayer = players.get(socket.id);
+    meetingCallParticipants.delete(socket.id);
+
+    if (currentPlayer) {
+      const channel = roomChannel(currentPlayer.room);
+      if (channel) {
+        socket.to(channel).emit("meeting:participant-left", socket.id);
+      }
+    }
+
+    if (typeof callback === "function") callback({ success: true });
+  });
+
+  // A short status line shown on the profile and in the people list.
+  socket.on("player:setStatus", (status, callback) => {
+    const reply = (response) => {
+      if (typeof callback === "function") callback(response);
+    };
+
+    const currentPlayer = players.get(socket.id);
+    if (!currentPlayer) {
+      reply({ success: false, error: "Player not found" });
+      return;
+    }
+
+    const nextStatus =
+      typeof status === "string" ? status.trim().slice(0, 80) : "";
+
+    currentPlayer.status = nextStatus;
+    players.set(socket.id, currentPlayer);
+
+    io.emit("player:status", { id: socket.id, status: nextStatus });
+    reply({ success: true, status: nextStatus });
+  });
+
+  // Screen sharing — Meeting Room only, with its own signaling handlers.
+  registerScreenShareHandlers(socket, { players, io, activeShares });
 
   // Handle player disconnection.
   socket.on("disconnect", () => {
     const disconnectedPlayer = players.get(socket.id);
-    if (
-      !isCurrentPlayerSession(players, socket.id, disconnectedPlayer)
-    ) {
-      return;
-    }
-
-    const playerChannel = roomChannel(disconnectedPlayer?.room);
-    publishActivityToRoom(
-      disconnectedPlayer.room,
-      createActivityNotification(
-        "player-left",
-        disconnectedPlayer,
-        disconnectedPlayer.room,
-        nextActivityId()
-      ),
-      socket.id
-    );
     players.delete(socket.id);
     spawnSlots.delete(socket.id);
-    nearbyPayloadState.delete(socket.id);
-    leaveMeetingCall(socket).catch((error) => {
-      console.error("Failed to clean up disconnected meeting participant:", error.message);
-    });
 
     // Let proximity peers tear down their audio connections.
     const nearSet = proximityState.get(socket.id);
@@ -924,16 +954,23 @@ io.on("connection", async (socket) => {
       proximityState.delete(socket.id);
     }
 
-    markPlayerDisconnected(db.collection("players"), socket.id)
-      .catch((error) => {
+    enqueuePlayerPersistence(socket.id, async () => {
+      try {
+        await playerPersistenceReady;
+      } catch (error) {
         console.error(
-          "Failed to update player status:",
+          "Initial player persistence failed before disconnect:",
           error.message
         );
+      }
+      await markPlayerDisconnected(db.collection("players"), socket.id);
+    }).catch((error) => {
+        console.error("Failed to update player status:", error.message);
       });
 
-    if (playerChannel) {
-      socket.to(playerChannel).emit("player:left", socket.id);
+    const currentPlayerChannel = roomChannel(disconnectedPlayer?.room);
+    if (currentPlayerChannel) {
+      socket.to(currentPlayerChannel).emit("player:left", socket.id);
     }
     emitPresenceState();
     console.log(`Player disconnected: ${socket.id}`);
@@ -978,7 +1015,29 @@ async function startServer() {
     );
 
     console.log("MongoDB 2d geospatial index ready!");
+
+    availableRooms = await initializeRoomCatalog(db);
+    console.log("Room catalog loaded:", availableRooms.length);
+
+    await initializeLayouts(
+      db,
+      availableRooms.map((room) => room.id)
+    );
+    console.log("Room layouts seeded.");
+
     console.log("MongoDB connected successfully!");
+
+    // Scale out: with REDIS_URL set, instances share rooms and events via Redis.
+    try {
+      mesh = await attachMesh(io, process.env.REDIS_URL);
+      console.log(
+        mesh
+          ? "Redis mesh attached — multi-instance ready."
+          : "No REDIS_URL — running as a single instance."
+      );
+    } catch (error) {
+      console.error("Redis mesh failed to attach:", error.message);
+    }
 
     httpServer.listen(PORT, () => {
       console.log(`ProxiSpeak server running at http://localhost:${PORT}`);

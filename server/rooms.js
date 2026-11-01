@@ -1,6 +1,6 @@
 const ROOM_NAMES = ["Lounge", "Meeting Room", "Focus Space"];
 const DEFAULT_ROOM = ROOM_NAMES[0];
-const { getNearbyPlayers } = require("./proximity");
+const { getNearbyPlayers } = require("./lib/proximity");
 
 function normalizeRoomName(roomName) {
   return ROOM_NAMES.includes(roomName) ? roomName : null;
