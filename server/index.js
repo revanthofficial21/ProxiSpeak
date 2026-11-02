@@ -1,196 +1,139 @@
-const express = require("express");
-const http = require("http");
-const cors = require("cors");
-const { Server } = require("socket.io");
-require("dotenv").config();
+const express = require('express');
+const http = require('http');
+const cors = require('cors');
+const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
+const PORT = process.env.PORT || 3000;
+const WORLD_WIDTH = 1000;
+const WORLD_HEIGHT = 600;
+const PROXIMITY_DISTANCE = 100;
+const players = new Map();
+const voiceParticipants = new Set();
 
-app.use(cors());
+app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173' }));
 app.use(express.json());
 
 const io = new Server(server, {
   cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
+    origin: process.env.CLIENT_URL || 'http://localhost:5173',
+    methods: ['GET', 'POST'],
   },
 });
 
-const PORT = process.env.PORT || 5000;
-
-const players = new Map();
-const voiceUsers = new Set();
-
-app.get("/", (req, res) => {
-  res.json({
-    message: "ProxiSpeak server is running",
-  });
+app.get('/', (_req, res) => {
+  res.json({ status: 'ProxiSpeak server running', connectedPlayers: players.size });
 });
 
-io.on("connection", (socket) => {
-  console.log("User connected:", socket.id);
+function publicPlayer(player) {
+  return { id: player.id, x: player.x, y: player.y, name: player.name, avatarColor: player.avatarColor };
+}
+function distance(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+function updateProximity() {
+  const all = Array.from(players.values());
+  for (const player of all) {
+    const nearby = all.filter((other) => other.id !== player.id && distance(player, other) <= PROXIMITY_DISTANCE);
+    io.to(player.id).emit('player:nearby', nearby.map(publicPlayer));
+  }
+  // Emit enter/leave transitions to both clients.
+  for (let i = 0; i < all.length; i++) {
+    for (let j = i + 1; j < all.length; j++) {
+      const a = all[i], b = all[j];
+      const key = [a.id, b.id].sort().join(':');
+      const isNear = distance(a, b) <= PROXIMITY_DISTANCE;
+      const wasNear = proximityPairs.has(key);
+      if (isNear && !wasNear) {
+        io.to(a.id).emit('proximity:enter', publicPlayer(b));
+        io.to(b.id).emit('proximity:enter', publicPlayer(a));
+      } else if (!isNear && wasNear) {
+        io.to(a.id).emit('proximity:leave', b.id);
+        io.to(b.id).emit('proximity:leave', a.id);
+      }
+      if (isNear) proximityPairs.add(key); else proximityPairs.delete(key);
+    }
+  }
+}
+const proximityPairs = new Set();
 
+io.on('connection', (socket) => {
   const player = {
     id: socket.id,
-    x: 100,
-    y: 100,
-    name: "Guest",
-    avatarColor: "#7C9EFF",
+    x: 500 + (Math.random() * 120 - 60),
+    y: 300 + (Math.random() * 120 - 60),
+    name: `Player-${socket.id.slice(0, 4)}`,
+    avatarColor: '#6ee7b7',
   };
-
   players.set(socket.id, player);
+  socket.emit('world:state', Array.from(players.values()).map(publicPlayer));
+  socket.broadcast.emit('player:joined', publicPlayer(player));
+  updateProximity();
 
-  socket.emit("world:state", Array.from(players.values()));
-  socket.broadcast.emit("player:joined", player);
-
-  // Player movement
-  socket.on("player:move", (data = {}) => {
-    const currentPlayer = players.get(socket.id);
-    if (!currentPlayer) return;
-
-    if (typeof data.x === "number") currentPlayer.x = data.x;
-    if (typeof data.y === "number") currentPlayer.y = data.y;
-
-    io.emit("player:moved", currentPlayer);
+  socket.on('player:move', (position) => {
+    if (!position || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
+    player.x = Math.max(20, Math.min(WORLD_WIDTH - 20, position.x));
+    player.y = Math.max(20, Math.min(WORLD_HEIGHT - 20, position.y));
+    io.emit('player:moved', publicPlayer(player));
+    updateProximity();
   });
 
-  // Update player name
-  socket.on("player:setName", (name) => {
-    const currentPlayer = players.get(socket.id);
-
-    if (!currentPlayer || typeof name !== "string") return;
-
-    currentPlayer.name = name.trim().slice(0, 30) || "Guest";
-
-    io.emit("player:renamed", currentPlayer);
-  });
-
-  // Update avatar colour
-  socket.on("player:setAvatarColor", (color) => {
-    const currentPlayer = players.get(socket.id);
-
-    if (!currentPlayer || typeof color !== "string") return;
-
-    currentPlayer.avatarColor = color;
-
-    io.emit("player:avatarColorUpdated", currentPlayer);
-  });
-
-  // Join voice chat
-  socket.on("voice:join", () => {
-    if (voiceUsers.has(socket.id)) return;
-
-    // Notify existing voice participants about the new participant.
-    voiceUsers.forEach((peerId) => {
-      io.to(peerId).emit("voice:peer", {
-        peerId: socket.id,
-      });
-    });
-
-    voiceUsers.add(socket.id);
-
-    console.log("Voice chat joined:", socket.id);
-  });
-
-  // Leave voice chat
-  socket.on("voice:leave", () => {
-    if (!voiceUsers.has(socket.id)) return;
-
-    voiceUsers.delete(socket.id);
-
-    socket.broadcast.emit("voice:peer-left", {
-      peerId: socket.id,
-    });
-
-    console.log("Voice chat left:", socket.id);
-  });
-
-  // Request a voice connection with another participant.
-  socket.on("voice:request-peer", ({ peerId } = {}) => {
-    if (
-      !voiceUsers.has(socket.id) ||
-      !peerId ||
-      peerId === socket.id ||
-      !voiceUsers.has(peerId)
-    ) {
+  socket.on('player:setName', (name, callback) => {
+    const cleanName = typeof name === 'string' ? name.trim().slice(0, 24) : '';
+    if (!cleanName) {
+      if (typeof callback === 'function') callback({ ok: false, message: 'Enter a name.' });
       return;
     }
-
-    io.to(peerId).emit("voice:peer", {
-      peerId: socket.id,
-    });
+    player.name = cleanName;
+    io.emit('player:renamed', publicPlayer(player));
+    if (typeof callback === 'function') callback({ ok: true, player: publicPlayer(player) });
   });
 
-  // Relay a WebRTC offer to the intended participant.
-  socket.on("webrtc:offer", ({ to, offer } = {}) => {
-    if (
-      !voiceUsers.has(socket.id) ||
-      !to ||
-      !offer ||
-      !voiceUsers.has(to)
-    ) {
+  socket.on('player:setAvatarColor', (color, callback) => {
+    if (typeof color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(color)) {
+      if (typeof callback === 'function') callback({ ok: false, message: 'Invalid color.' });
       return;
     }
-
-    io.to(to).emit("webrtc:offer", {
-      from: socket.id,
-      offer,
-    });
+    player.avatarColor = color;
+    io.emit('player:avatarColorUpdated', publicPlayer(player));
+    if (typeof callback === 'function') callback({ ok: true, player: publicPlayer(player) });
   });
 
-  // Relay a WebRTC answer to the intended participant.
-  socket.on("webrtc:answer", ({ to, answer } = {}) => {
-    if (
-      !voiceUsers.has(socket.id) ||
-      !to ||
-      !answer ||
-      !voiceUsers.has(to)
-    ) {
-      return;
+  // WebRTC signalling relay: audio itself travels peer-to-peer, not through this server.
+  socket.on('voice:join', () => {
+    voiceParticipants.add(socket.id);
+    for (const peerId of voiceParticipants) {
+      if (peerId !== socket.id && players.has(peerId) && distance(player, players.get(peerId)) <= PROXIMITY_DISTANCE) {
+        socket.emit('voice:peer', { peerId });
+      }
     }
-
-    io.to(to).emit("webrtc:answer", {
-      from: socket.id,
-      answer,
-    });
   });
-
-  // Relay ICE candidates.
-  socket.on("webrtc:ice-candidate", ({ to, candidate } = {}) => {
-    if (
-      !voiceUsers.has(socket.id) ||
-      !to ||
-      !candidate ||
-      !voiceUsers.has(to)
-    ) {
-      return;
-    }
-
-    io.to(to).emit("webrtc:ice-candidate", {
-      from: socket.id,
-      candidate,
-    });
+  socket.on('voice:leave', () => {
+    voiceParticipants.delete(socket.id);
+    for (const peerId of voiceParticipants) io.to(peerId).emit('voice:peer-left', { peerId: socket.id });
   });
+  socket.on('voice:request-peer', ({ peerId } = {}) => {
+    if (!peerId || peerId === socket.id || !voiceParticipants.has(peerId)) return;
+    if (!players.has(peerId) || distance(player, players.get(peerId)) > PROXIMITY_DISTANCE) return;
+    io.to(peerId).emit('voice:peer', { peerId: socket.id });
+  });
+  for (const eventName of ['webrtc:offer', 'webrtc:answer', 'webrtc:ice-candidate']) {
+    socket.on(eventName, (payload = {}) => {
+      const { to } = payload;
+      if (typeof to !== 'string' || !players.has(to)) return;
+      io.to(to).emit(eventName, { ...payload, from: socket.id });
+    });
+  }
 
-  // Disconnect cleanup
-  socket.on("disconnect", () => {
-    console.log("User disconnected:", socket.id);
-
+  socket.on('disconnect', () => {
     players.delete(socket.id);
-
-    if (voiceUsers.has(socket.id)) {
-      voiceUsers.delete(socket.id);
-
-      socket.broadcast.emit("voice:peer-left", {
-        peerId: socket.id,
-      });
-    }
-
-    io.emit("player:left", socket.id);
+    voiceParticipants.delete(socket.id);
+    for (const peerId of voiceParticipants) io.to(peerId).emit('voice:peer-left', { peerId: socket.id });
+    for (const key of proximityPairs) if (key.split(':').includes(socket.id)) proximityPairs.delete(key);
+    socket.broadcast.emit('player:left', socket.id);
+    updateProximity();
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`ProxiSpeak server running on port ${PORT}`);
-});
+server.listen(PORT, () => console.log(`ProxiSpeak server listening on http://localhost:${PORT}`));
