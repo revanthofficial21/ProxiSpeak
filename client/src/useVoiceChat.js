@@ -4,6 +4,8 @@ const ICE_SERVERS = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
 
+const AUDIO_RANGE = 100;
+
 export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState(
@@ -49,14 +51,17 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
       audioElementsRef.current.delete(peerId);
     }
 
-    const audioNodes = audioNodesRef.current.get(peerId);
-    if (audioNodes) {
+    const nodes = audioNodesRef.current.get(peerId);
+
+    if (nodes) {
       try {
-        audioNodes.source.disconnect();
-        audioNodes.gain.disconnect();
+        nodes.source.disconnect();
+        nodes.gain.disconnect();
+        nodes.panner.disconnect();
       } catch {
         // Nodes may already be disconnected.
       }
+
       audioNodesRef.current.delete(peerId);
     }
 
@@ -102,7 +107,6 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
         }
 
         audio.srcObject = event.streams[0];
-        // Web Audio handles distance attenuation; keep the media element at full volume.
         audio.volume = 1;
         audio.muted = mutedRef.current;
 
@@ -110,18 +114,33 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
           const AudioContextClass =
             window.AudioContext || window.webkitAudioContext;
 
-          if (AudioContextClass && !audioNodesRef.current.has(peerId)) {
+          if (
+            AudioContextClass &&
+            !audioNodesRef.current.has(peerId)
+          ) {
             const audioContext =
               audioContextRef.current ||
               (audioContextRef.current = new AudioContextClass());
 
             const source = audioContext.createMediaElementSource(audio);
+
             const gain = audioContext.createGain();
             gain.gain.value = 0;
 
+            // Week 4: Stereo audio panning.
+            const panner = audioContext.createStereoPanner();
+            panner.pan.value = 0;
+
+            // Audio flow: Source -> Gain -> Panner -> Speakers.
             source.connect(gain);
-            gain.connect(audioContext.destination);
-            audioNodesRef.current.set(peerId, { source, gain });
+            gain.connect(panner);
+            panner.connect(audioContext.destination);
+
+            audioNodesRef.current.set(peerId, {
+              source,
+              gain,
+              panner,
+            });
           }
 
           if (audioContextRef.current?.state === "suspended") {
@@ -212,14 +231,16 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
 
     audioElementsRef.current.clear();
 
-    audioNodesRef.current.forEach(({ source, gain }) => {
+    audioNodesRef.current.forEach(({ source, gain, panner }) => {
       try {
         source.disconnect();
         gain.disconnect();
+        panner.disconnect();
       } catch {
         // Nodes may already be disconnected.
       }
     });
+
     audioNodesRef.current.clear();
 
     localStreamRef.current?.getTracks().forEach((track) => {
@@ -240,6 +261,7 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
 
   const toggleMute = useCallback(() => {
     const nextMuted = !mutedRef.current;
+
     mutedRef.current = nextMuted;
     setMuted(nextMuted);
 
@@ -258,11 +280,8 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
       Math.min(100, Number(value) || 0)
     );
 
-    const volume = numericValue / 100;
-    volumeRef.current = volume;
+    volumeRef.current = numericValue / 100;
     setSpeakerVolume(numericValue);
-
-    // The distance-attenuation effect combines this master volume with each peer's distance.
   }, []);
 
   const resumeAudio = useCallback(async () => {
@@ -384,17 +403,21 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
     };
   }, [socket, createPeerConnection, updatePeerState, closePeer]);
 
+  // Week 3: Distance-based volume.
+  // Week 4: Left/right stereo audio panning.
   useEffect(() => {
     if (!voiceEnabled) return undefined;
 
     const updateSpatialAudio = () => {
       const players = playersRef?.current;
+
       if (!players || typeof players.get !== "function") return;
 
       const localPlayer = players.get(socket?.id);
+
       if (!localPlayer) return;
 
-      audioNodesRef.current.forEach(({ gain }, peerId) => {
+      audioNodesRef.current.forEach(({ gain, panner }, peerId) => {
         const remotePlayer = players.get(peerId);
 
         if (
@@ -404,24 +427,42 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
           typeof remotePlayer.x !== "number" ||
           typeof remotePlayer.y !== "number"
         ) {
-          gain.gain.setTargetAtTime(0, audioContextRef.current.currentTime, 0.04);
+          const now = audioContextRef.current?.currentTime || 0;
+
+          gain.gain.setTargetAtTime(0, now, 0.04);
+          panner.pan.setTargetAtTime(0, now, 0.04);
           return;
         }
 
-        const dx = localPlayer.x - remotePlayer.x;
-        const dy = localPlayer.y - remotePlayer.y;
+        const dx = remotePlayer.x - localPlayer.x;
+        const dy = remotePlayer.y - localPlayer.y;
+
         const distance = Math.sqrt(dx * dx + dy * dy);
 
-        // Full volume at the same position, fading smoothly to silence at 100 px.
-        const distanceGain = Math.max(0, Math.min(1, 1 - distance / 100));
+        // Distance-based volume attenuation.
+        const distanceGain = Math.max(
+          0,
+          Math.min(1, 1 - distance / AUDIO_RANGE)
+        );
+
         const targetGain = mutedRef.current
           ? 0
           : volumeRef.current * distanceGain;
 
+        // Horizontal position controls left/right stereo direction.
+        const targetPan = Math.max(
+          -1,
+          Math.min(1, dx / AUDIO_RANGE)
+        );
+
         if (audioContextRef.current) {
-          gain.gain.setTargetAtTime(
-            targetGain,
-            audioContextRef.current.currentTime,
+          const now = audioContextRef.current.currentTime;
+
+          gain.gain.setTargetAtTime(targetGain, now, 0.04);
+
+          panner.pan.setTargetAtTime(
+            targetPan,
+            now,
             0.04
           );
         }
@@ -429,7 +470,11 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
     };
 
     updateSpatialAudio();
-    const intervalId = window.setInterval(updateSpatialAudio, 100);
+
+    const intervalId = window.setInterval(
+      updateSpatialAudio,
+      100
+    );
 
     return () => window.clearInterval(intervalId);
   }, [voiceEnabled, socket, playersRef]);
@@ -470,19 +515,25 @@ export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
       peerConnectionsRef.current.clear();
       audioElementsRef.current.clear();
 
-      audioNodesRef.current.forEach(({ source, gain }) => {
+      audioNodesRef.current.forEach(({ source, gain, panner }) => {
         try {
           source.disconnect();
           gain.disconnect();
+          panner.disconnect();
         } catch {
           // Nodes may already be disconnected.
         }
       });
+
       audioNodesRef.current.clear();
 
-      if (audioContextRef.current && audioContextRef.current.state !== "closed") {
+      if (
+        audioContextRef.current &&
+        audioContextRef.current.state !== "closed"
+      ) {
         audioContextRef.current.close();
       }
+
       audioContextRef.current = null;
     };
   }, []);
