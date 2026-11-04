@@ -17,7 +17,24 @@ export function io() {
     emit(event, ...args) {
       emitted.push({ event, args });
       const callback = args.find((argument) => typeof argument === "function");
-      if (callback) callback({ success: true });
+      if (callback) {
+        const response =
+          event === "player:joinRoom"
+            ? { success: true, room: args[0] }
+            : event === "meeting:join"
+              ? {
+                  success: true,
+                  participants: [
+                    {
+                      id: "player-two",
+                      name: "Second Player",
+                      handRaised: false,
+                    },
+                  ],
+                }
+              : { success: true };
+        callback(response);
+      }
     },
     timeout() {
       return { emit() {} };

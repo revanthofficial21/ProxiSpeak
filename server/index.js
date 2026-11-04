@@ -20,6 +20,7 @@ const {
   MEETING_ROOM,
   relayWebRtcSignal,
 } = require("./lib/meeting-call");
+const { registerMeetingEvents } = require("./lib/meeting-events");
 const { attachMesh } = require("./lib/mesh");
 const { initializeRoomCatalog } = require("./lib/roomCatalog");
 const { createRateLimiter } = require("./lib/rate-limit");
@@ -103,6 +104,7 @@ const chatLimiter = createRateLimiter({ capacity: 5, refillPerSecond: 1 });
 const proximityState = new Map();
 const nearbyPayloadState = new Map();
 const meetingCallParticipants = new Set();
+const meetingCallRaisedHands = new Set();
 const activeShares = new Map();
 const enqueuePlayerPersistence = createPlayerPersistenceQueue();
 
@@ -332,6 +334,12 @@ io.on("connection", async (socket) => {
   };
 
   players.set(socket.id, player);
+  registerMeetingEvents(socket, {
+    io,
+    players,
+    participantIds: meetingCallParticipants,
+    raisedHands: meetingCallRaisedHands,
+  });
 
   const playerChannel = roomChannel(player.room);
   if (playerChannel) {
@@ -843,7 +851,20 @@ io.on("connection", async (socket) => {
         return;
       }
 
-      meetingCallParticipants.delete(socket.id);
+      const wasMeetingParticipant = meetingCallParticipants.delete(socket.id);
+      const wasHandRaised = meetingCallRaisedHands.delete(socket.id);
+      if (wasMeetingParticipant && previousChannel) {
+        if (wasHandRaised) {
+          socket.to(previousChannel).emit("meeting:hand", {
+            id: socket.id,
+            name: currentPlayer.name || `Player ${socket.id.slice(0, 4)}`,
+            raised: false,
+          });
+        }
+        socket
+          .to(previousChannel)
+          .emit("meeting:participant-left", socket.id);
+      }
 
       // Drop proximity to everyone in the old space.
       const nearSet = proximityState.get(socket.id);
@@ -899,7 +920,8 @@ io.on("connection", async (socket) => {
     meetingCallParticipants.add(socket.id);
     const participants = getMeetingCallParticipants(
       meetingCallParticipants,
-      players
+      players,
+      meetingCallRaisedHands
     );
 
     const channel = roomChannel(currentPlayer.room);
@@ -907,6 +929,7 @@ io.on("connection", async (socket) => {
       socket.to(channel).emit("meeting:participant-joined", {
         id: currentPlayer.id,
         name: currentPlayer.name || `Player ${currentPlayer.id.slice(0, 4)}`,
+        handRaised: meetingCallRaisedHands.has(currentPlayer.id),
       });
     }
 
@@ -915,11 +938,19 @@ io.on("connection", async (socket) => {
 
   socket.on("meeting:leave", (callback) => {
     const currentPlayer = players.get(socket.id);
-    meetingCallParticipants.delete(socket.id);
+    const wasMeetingParticipant = meetingCallParticipants.delete(socket.id);
+    const wasHandRaised = meetingCallRaisedHands.delete(socket.id);
 
-    if (currentPlayer) {
+    if (currentPlayer && wasMeetingParticipant) {
       const channel = roomChannel(currentPlayer.room);
       if (channel) {
+        if (wasHandRaised) {
+          socket.to(channel).emit("meeting:hand", {
+            id: socket.id,
+            name: currentPlayer.name || `Player ${socket.id.slice(0, 4)}`,
+            raised: false,
+          });
+        }
         socket.to(channel).emit("meeting:participant-left", socket.id);
       }
     }
@@ -955,6 +986,8 @@ io.on("connection", async (socket) => {
   // Handle player disconnection.
   socket.on("disconnect", () => {
     const disconnectedPlayer = players.get(socket.id);
+    meetingCallParticipants.delete(socket.id);
+    meetingCallRaisedHands.delete(socket.id);
     players.delete(socket.id);
     spawnSlots.delete(socket.id);
 

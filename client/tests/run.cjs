@@ -53,7 +53,12 @@ globalThis.__testFetch = () =>
   Promise.resolve({
     ok: true,
     json: () =>
-      Promise.resolve({ rooms: [{ id: "open-world", name: "Open World" }] }),
+      Promise.resolve({
+        rooms: [
+          { id: "open-world", name: "Open World" },
+          { id: "Meeting Room", name: "Meeting Room" },
+        ],
+      }),
   });
 global.fetch = globalThis.__testFetch;
 

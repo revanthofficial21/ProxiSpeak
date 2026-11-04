@@ -690,6 +690,7 @@ button:disabled {
 }
 
 .meeting-panel {
+  position: relative;
   max-width: 100%;
   margin: 0 auto 24px;
   padding: 18px 20px;
@@ -740,6 +741,65 @@ button:disabled {
 .meeting-controls {
   justify-content: flex-start;
   margin-top: 14px;
+}
+
+.meeting-panel .meeting-hand-raised {
+  background: #fbbf24;
+  color: #422006;
+}
+
+.meeting-reaction-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.meeting-panel .meeting-reaction-buttons button {
+  min-width: 38px;
+  padding: 6px 9px;
+  background: #263449;
+  color: #f8fafc;
+  font-size: 17px;
+}
+
+.meeting-reaction-overlay {
+  position: absolute;
+  z-index: 2;
+  top: 76px;
+  right: 24px;
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.meeting-reaction-pop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid #53647b;
+  border-radius: 999px;
+  background: #0f172aee;
+  color: #f8fafc;
+  box-shadow: 0 6px 20px #0006;
+  animation: meeting-reaction-fade 2.6s ease-out forwards;
+}
+
+.meeting-reaction-pop > span:first-child {
+  font-size: 23px;
+}
+
+@keyframes meeting-reaction-fade {
+  0%,
+  72% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
 }
 
 .meeting-video-grid {
@@ -793,6 +853,18 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.meeting-video-name {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.meeting-hand-indicator {
+  flex: 0 0 auto;
+  font-size: 15px;
 }
 
 .meeting-video-caption span {

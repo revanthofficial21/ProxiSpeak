@@ -6,13 +6,18 @@ function canJoinMeetingCall(player) {
   return Boolean(player && player.room === MEETING_ROOM);
 }
 
-function getMeetingCallParticipants(participantIds, players) {
+function getMeetingCallParticipants(
+  participantIds,
+  players,
+  raisedHands = new Set()
+) {
   return Array.from(participantIds)
     .map((id) => players.get(id))
     .filter(Boolean)
     .map((player) => ({
       id: player.id,
       name: player.name || `Player ${player.id.slice(0, 4)}`,
+      handRaised: raisedHands.has(player.id),
     }));
 }
 

@@ -18,11 +18,11 @@ Catches syntax errors, bad imports, missing exports. Seconds.
 npm test          # from the repo root: server suites + client suites
 ```
 
-The server runner executes 13 test scripts, including player persistence,
-reconnect claims, room changes, proximity, signaling authorization, room/world
-chat delivery, screen sharing, rate limits, layouts, and activity notifications. The client
-runner executes activity tests, an app-rendering smoke test, and occlusion
-geometry tests.
+The server runner executes test scripts covering player persistence, reconnect
+claims, room changes, proximity, signaling authorization, Meeting Room event
+validation and room isolation, room/world chat delivery, screen sharing, rate
+limits, layouts, and activity notifications. The client runner executes
+activity tests, an app-rendering smoke test, and occlusion geometry tests.
 
 **This is where a new feature should get its first test.** If the feature has
 logic that can be pulled out of React and out of the socket handler — a distance,
@@ -57,7 +57,8 @@ say in your notes that you did:
 - **Voice** — two windows, both enable the mic, walk within 100px. Watch the level
   meters: the peer's bar moves when the other person speaks.
 - **Meeting call** — join the call in the Meeting Room from two browsers; check
-  audio/video and participant join/leave updates.
+  audio/video and participant join/leave updates, raise and lower hands, and
+  verify the five reaction buttons broadcast temporary reactions to both tabs.
 - **Occlusion** — put a desk between the two avatars and the voice should go dull.
 - **Screen share** — Meeting Room, click Share screen. Needs a standalone Chrome,
   Edge or Firefox: embedded previews (VS Code, Electron) cannot capture the screen.

@@ -269,6 +269,47 @@ async function main() {
       worldChat.textContent.includes("World hello")
   );
 
+  const meetingRoomCard = [...container.querySelectorAll(".room-card")].find(
+    (button) => button.textContent.includes("Meeting Room")
+  );
+  await act(async () => meetingRoomCard.click());
+  const meetingRoomJoin = container.querySelector(
+    ".rooms-panel .room-button"
+  );
+  await act(async () => meetingRoomJoin.click());
+  act(() => {
+    globalThis.__testSocket.__handlers.get("meeting:hand")({
+      id: "player-two",
+      name: "Second Player",
+      raised: true,
+    });
+  });
+  check(
+    "raised hands appear beside participant names",
+    container.querySelector(".rooms-panel .meeting-hand-indicator")
+      ?.textContent === " ✋"
+  );
+
+  act(() => {
+    globalThis.__testSocket.__handlers.get("meeting:reaction")({
+      id: "player-two",
+      name: "Second Player",
+      emoji: "👏",
+    });
+  });
+  check(
+    "meeting reactions display on the Meeting Room screen",
+    container.querySelector(".meeting-reaction-pop")?.textContent ===
+      "👏Second Player"
+  );
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, 2700));
+  });
+  check(
+    "meeting reactions disappear automatically",
+    !container.querySelector(".meeting-reaction-pop")
+  );
+
   await act(async () => {
     root.unmount();
   });

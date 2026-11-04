@@ -436,6 +436,8 @@ export default function App() {
   const meetingParticipantsRef = useRef(new Set());
   const meetingCallActiveRef = useRef(false);
   const localMeetingVideoRef = useRef(null);
+  const meetingReactionTimersRef = useRef(new Map());
+  const meetingReactionIdRef = useRef(0);
 
 
   const [showLanding, setShowLanding] = useState(true);
@@ -489,6 +491,9 @@ export default function App() {
   const [roomsError, setRoomsError] = useState("");
   const [roomError, setRoomError] = useState("");
   const [meetingParticipants, setMeetingParticipants] = useState([]);
+  const [meetingHandRaised, setMeetingHandRaised] = useState(false);
+  const [meetingReactions, setMeetingReactions] = useState([]);
+
   const {
     voiceEnabled,
     voiceStatus,
@@ -830,8 +835,17 @@ export default function App() {
     }
   }, [closePeer]);
 
+  const clearMeetingReactions = useCallback(() => {
+    for (const timer of meetingReactionTimersRef.current.values()) {
+      window.clearTimeout(timer);
+    }
+    meetingReactionTimersRef.current.clear();
+    setMeetingReactions([]);
+  }, []);
+
   const cleanupMeetingCall = useCallback((notifyServer = true) => {
     if (notifyServer) socketRef.current?.emit("meeting:leave");
+    clearMeetingReactions();
     const participantIds = Array.from(meetingParticipantsRef.current);
     meetingCallActiveRef.current = false;
     meetingParticipantsRef.current.clear();
@@ -852,13 +866,33 @@ export default function App() {
     }
     setMeetingCallJoined(false);
     setMeetingParticipants([]);
+    setMeetingHandRaised(false);
     setRemoteVideoStreams({});
     setMeetingMicEnabled(false);
     setMeetingCameraEnabled(false);
     setMeetingHasMicrophone(false);
     setMeetingHasCamera(false);
     setMeetingCallError("");
-  }, [removeMeetingTracks]);
+  }, [clearMeetingReactions, removeMeetingTracks]);
+
+  const toggleMeetingHand = useCallback(() => {
+    const raised = !meetingHandRaised;
+    setMeetingHandRaised(raised);
+    socketRef.current?.emit("meeting:hand", { raised }, (response) => {
+      if (response?.success) return;
+      setMeetingHandRaised(!raised);
+      setMeetingCallError(
+        response?.error || "Could not update your hand status."
+      );
+    });
+  }, [meetingHandRaised]);
+
+  const sendMeetingReaction = useCallback((emoji) => {
+    socketRef.current?.emit("meeting:reaction", { emoji }, (response) => {
+      if (response?.success) return;
+      setMeetingCallError(response?.error || "Could not send your reaction.");
+    });
+  }, []);
 
   const joinMeetingCall = useCallback(async () => {
     if (currentRoom !== "Meeting Room" || meetingCallBusy) return;
@@ -952,6 +986,10 @@ export default function App() {
           participants.map((participant) => participant.id)
         );
         setMeetingParticipants(participants);
+        setMeetingHandRaised(
+          participants.find((participant) => participant.id === socket.id)
+            ?.handRaised === true
+        );
         setMeetingCallJoined(true);
         participants.forEach((participant) =>
           createPeer(participant.id, socket.id < participant.id)
@@ -1085,15 +1123,17 @@ export default function App() {
         setRoomError(response?.error || "Could not switch rooms.");
         return;
       }
+      clearMeetingReactions();
       setCurrentRoom(response.room);
       currentRoomRef.current = response.room;
       setUnreadCounts((current) => ({ ...current, [response.room]: 0 }));
     });
-  }, [cleanupMeetingCall, currentRoom, meetingCallJoined]);
+  }, [cleanupMeetingCall, clearMeetingReactions, currentRoom, meetingCallJoined]);
 
   // Socket.IO connection and multiplayer events
   useEffect(() => {
     const peers = peersRef.current;
+    const reactionTimers = meetingReactionTimersRef.current;
     const client = io(SERVER_URL);
     const socket = client;
     const handleActivityNotification = (notification) => {
@@ -1392,11 +1432,59 @@ export default function App() {
       setMeetingParticipants((current) =>
         current.some((candidate) => candidate.id === participant.id)
           ? current.map((candidate) =>
-              candidate.id === participant.id ? participant : candidate
+              candidate.id === participant.id
+                ? { ...candidate, ...participant }
+                : candidate
             )
-          : [...current, participant]
+          : [...current, { ...participant, handRaised: participant.handRaised === true }]
       );
       createPeer(participant.id, socket.id < participant.id);
+    });
+
+    socket.on("meeting:hand", (handUpdate) => {
+      if (
+        currentRoomRef.current !== "Meeting Room" ||
+        !handUpdate ||
+        typeof handUpdate.id !== "string" ||
+        typeof handUpdate.raised !== "boolean"
+      ) {
+        return;
+      }
+      if (handUpdate.id === socket.id) {
+        setMeetingHandRaised(handUpdate.raised);
+        return;
+      }
+      setMeetingParticipants((current) =>
+        current.map((participant) =>
+          participant.id === handUpdate.id
+            ? { ...participant, handRaised: handUpdate.raised }
+            : participant
+        )
+      );
+    });
+
+    socket.on("meeting:reaction", (reaction) => {
+      if (
+        currentRoomRef.current !== "Meeting Room" ||
+        !reaction ||
+        typeof reaction.id !== "string" ||
+        typeof reaction.name !== "string" ||
+        !["👍", "👏", "😂", "❤️", "🙌"].includes(reaction.emoji)
+      ) {
+        return;
+      }
+      const reactionId = ++meetingReactionIdRef.current;
+      setMeetingReactions((current) => [
+        ...current,
+        { ...reaction, reactionId },
+      ]);
+      const timer = window.setTimeout(() => {
+        meetingReactionTimersRef.current.delete(reactionId);
+        setMeetingReactions((current) =>
+          current.filter((entry) => entry.reactionId !== reactionId)
+        );
+      }, 2600);
+      meetingReactionTimersRef.current.set(reactionId, timer);
     });
 
     socket.on("meeting:participant-left", (participantId) => {
@@ -1458,6 +1546,10 @@ export default function App() {
 
     return () => {
       unsubscribeActivityNotifications();
+      for (const timer of reactionTimers.values()) {
+        window.clearTimeout(timer);
+      }
+      reactionTimers.clear();
       socket.removeAllListeners();
       socket.disconnect();
       socketRef.current = null;
@@ -1737,6 +1829,7 @@ export default function App() {
         return;
       }
       setRoomError("");
+      clearMeetingReactions();
       setActiveRoomId(response.room);
       setMeetingParticipants([]);
     });
@@ -2186,6 +2279,20 @@ export default function App() {
           )}
         </div>
 
+        {currentRoom === "Meeting Room" && meetingReactions.length > 0 && (
+          <div className="meeting-reaction-overlay" aria-live="polite">
+            {meetingReactions.map((reaction) => (
+              <span
+                className="meeting-reaction-pop"
+                key={reaction.reactionId}
+              >
+                <span aria-hidden="true">{reaction.emoji}</span>
+                <span>{reaction.name}</span>
+              </span>
+            ))}
+          </div>
+        )}
+
         {meetingCallJoined && (
           <>
             <div className="meeting-controls">
@@ -2203,6 +2310,27 @@ export default function App() {
               >
                 {meetingCameraEnabled ? "Turn camera off" : "Enable camera"}
               </button>
+              <button
+                type="button"
+                className={meetingHandRaised ? "meeting-hand-raised" : ""}
+                onClick={toggleMeetingHand}
+                aria-pressed={meetingHandRaised}
+              >
+                {meetingHandRaised ? "Lower hand" : "Raise hand"}
+              </button>
+              <div className="meeting-reaction-buttons" aria-label="Send a reaction">
+                {["👍", "👏", "😂", "❤️", "🙌"].map((emoji) => (
+                  <button
+                    type="button"
+                    key={emoji}
+                    onClick={() => sendMeetingReaction(emoji)}
+                    aria-label={`Send ${emoji} reaction`}
+                    title={`Send ${emoji}`}
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div className="meeting-video-grid">
@@ -2225,7 +2353,14 @@ export default function App() {
                   </div>
                 )}
                 <div className="meeting-video-caption">
-                  <strong>{playerName || "You"}</strong>
+                  <div className="meeting-video-name">
+                    <strong>{playerName || "You"}</strong>
+                    {meetingHandRaised && (
+                      <span className="meeting-hand-indicator" title="Hand raised">
+                        ✋
+                      </span>
+                    )}
+                  </div>
                   <span>You · {meetingMicEnabled ? "Mic on" : "Mic off"}</span>
                 </div>
               </article>
@@ -2257,7 +2392,17 @@ export default function App() {
                       </div>
                     )}
                     <div className="meeting-video-caption">
-                      <strong>{participant.name}</strong>
+                      <div className="meeting-video-name">
+                        <strong>{participant.name}</strong>
+                        {participant.handRaised && (
+                          <span
+                            className="meeting-hand-indicator"
+                            title="Hand raised"
+                          >
+                            ✋
+                          </span>
+                        )}
+                      </div>
                       <span>
                         {connectionState === "connected"
                           ? "Connected"
@@ -2572,7 +2717,21 @@ export default function App() {
         )}
         {meetingParticipants.length > 0 && (
           <p className="panel-note">
-            On the call: {meetingParticipants.map((p) => p.name).join(", ")}
+            On the call:{" "}
+            {meetingParticipants.map((participant, index) => (
+              <span className="meeting-room-participant" key={participant.id}>
+                {index > 0 ? ", " : ""}
+                {participant.name}
+                {participant.handRaised && (
+                  <span
+                    className="meeting-hand-indicator"
+                    title="Hand raised"
+                  >
+                    {" "}✋
+                  </span>
+                )}
+              </span>
+            ))}
           </p>
         )}
         {roomError && <p className="panel-error">{roomError}</p>}

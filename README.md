@@ -113,7 +113,10 @@ ProxiSpeak/
 8. Meeting calls. Players in Meeting Room can join an audio/video call. Call
    participants reuse the existing peer connections; camera tracks are
    shared only with other members of that call. A microphone track already
-   captured for proximity audio is reused rather than captured again.
+   captured for proximity audio is reused rather than captured again. Call
+   participants can raise or lower a hand and send 👍, 👏, 😂, ❤️, or 🙌
+   reactions. Hand status appears beside participant names, and reactions
+   briefly appear for everyone in the Meeting Room.
 7. Data Model
 The players collection (MongoDB):
 Field	Type	Notes
@@ -145,6 +148,8 @@ player:setName	name
 player:setAvatarPrefs	{ color }
 player:joinRoom	allow-listed room name
 meeting:join / meeting:leave	join or leave the Meeting Room call
+meeting:hand	{ raised: boolean }
+meeting:reaction	{ emoji } (👍, 👏, 😂, ❤️, or 🙌)
 chat:send	message text (current room)
 world-chat:send	message text (World Chat)
 player:move	{ x, y }
@@ -157,6 +162,8 @@ Server → Client
 Event	Payload
 room:state	{ room, players }
 meeting:participant-joined / meeting:participant-left	participant / socket id
+meeting:hand	{ id, name, raised }
+meeting:reaction	{ id, name, emoji }
 player:joined / player:moved / player:left	player / id
 player:renamed	player
 player:avatarPrefs	player
