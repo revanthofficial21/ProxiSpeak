@@ -2,11 +2,11 @@
 
 ## 1. Introduction
 
-ProxiSpeak is a location-based audio web application designed to help users discover and listen to audio content associated with nearby places.
+ProxiSpeak is a location-based audio web application designed to support real-time communication between users based on their proximity in a virtual environment.
 
-The purpose of this task is to research WebRTC technology and prepare the foundation for real-time voice communication between users.
+The purpose of this task is to research WebRTC technology, understand its core concepts, and test its implementation for real-time voice communication between users.
 
-This report documents the WebRTC concepts studied, browser tests performed, implementation work, and remaining integration tests.
+This report documents the WebRTC concepts studied, browser tests performed, implementation work, and ProxiSpeak integration testing.
 
 ## 2. Microphone Access Testing
 
@@ -19,9 +19,11 @@ This report documents the WebRTC concepts studied, browser tests performed, impl
 | Error message | None observed |
 
 ### Observation
+
 The browser successfully requested microphone permission, and access was granted.
 
 ### Conclusion
+
 The microphone test confirmed that browser-based microphone access worked in the tested environment.
 
 ## 3. Peer Connection Demo Testing
@@ -35,12 +37,14 @@ The microphone test confirmed that browser-based microphone access worked in the
 | Error message | None observed |
 
 ### Observation
-The peer connection demo completed successfully during the test.
+
+The standalone peer connection demo completed successfully during testing.
 
 ### Conclusion
-The demo provided practical exposure to establishing a WebRTC connection.
 
-**Note:** This result refers to the standalone demo, not the completed ProxiSpeak voice-chat integration.
+The demo provided practical experience with establishing a WebRTC connection.
+
+**Note:** This test was performed separately from the ProxiSpeak application.
 
 ## 4. WebRTC Signaling Concepts
 
@@ -152,11 +156,11 @@ The module includes code for:
 - Muting the microphone and adjusting speaker volume.
 - Tracking peer connection states.
 
-**Implementation status:** Code added. End-to-end integration has not yet been verified.
+**Implementation status:** Code added and tested as part of the ProxiSpeak application.
 
 ### 8.2 Backend Signaling
 
-The `server/index.js` file was updated with Socket.IO event handlers for player management and basic WebRTC signaling.
+The `server/index.js` file includes Socket.IO event handlers for player management and WebRTC signaling.
 
 The signaling events include:
 
@@ -171,9 +175,9 @@ The signaling events include:
 | `webrtc:answer` | Relays a WebRTC answer |
 | `webrtc:ice-candidate` | Relays an ICE candidate |
 
-The backend also includes existing player events for movement, player names, avatar colours, and disconnect cleanup.
+The backend also includes player events for movement, player names, avatar colours, and disconnect cleanup.
 
-**Implementation status:** Signaling handlers added. Runtime behavior and compatibility with the frontend remain to be verified.
+**Implementation status:** Signaling handlers added and tested during ProxiSpeak integration testing.
 
 ### 8.3 Dependencies
 
@@ -195,44 +199,58 @@ The server configuration includes:
 
 The server package configuration includes `start` and `dev` scripts pointing to `index.js`.
 
-**Note:** The presence of a dependency or script does not confirm that the application has been successfully executed or integrated.
+## 9. ProxiSpeak Integration and Multiplayer Testing
 
-## 9. ProxiSpeak Testing Status
+### Testing Environment
 
-| Test Item | Status |
-|---|---|
-| Standalone microphone test | Completed |
-| Standalone peer connection demo | Completed |
-| ICE candidate gathering | Completed |
-| WebRTC research and API study | Completed |
-| Frontend voice-chat module | Code added; integration not verified |
-| Backend signaling handlers | Code added; runtime not verified |
-| ProxiSpeak frontend and backend integration | Pending verification |
-| Two-browser ProxiSpeak voice call | Pending verification |
-| Voice connection when users are nearby | Pending verification |
-| Voice connection cleanup when users leave | Pending verification |
+- Application: ProxiSpeak
+- Frontend: Local development server
+- Testing method: Two separate browser windows
+- Voice proximity threshold: 100 pixels
 
-### Important Testing Note
+### 9.1 Multiplayer Testing Results
 
-The standalone WebRTC demo was successful. However, that result does not establish that the newly added ProxiSpeak frontend and backend code works together.
+| Test ID | Test Case | Result |
+|---|---|---|
+| TC01 | Both players appear in the same virtual office | Passed |
+| TC02 | Players move between desks and enter the meeting room | Passed |
+| TC03 | Player positions update in real time | Passed |
+| TC04 | Nearby-player detection updates when players approach or move away | Passed |
+| TC05 | WebRTC voice communication connects when players are within the 100-pixel proximity range | Passed |
 
-The end-to-end voice call, signaling compatibility, and nearby-player voice behavior must be verified before the integration can be marked complete.
+### Observations
+
+- Both browser sessions successfully appeared in the same virtual office.
+- Player movement worked correctly around the office furniture.
+- Players could enter the meeting room.
+- Player positions updated in real time.
+- Nearby-player detection responded to changes in player distance.
+- Voice communication worked when players were within the configured proximity range.
+
+### Conclusion
+
+All five two-browser multiplayer validation checks passed during testing.
+
+The results confirmed that the tested ProxiSpeak build supported real-time player movement, proximity detection, and nearby-player voice communication.
 
 ## 10. Remaining Work
 
-The following activities remain:
+The following activities may be considered for further validation:
 
-1. Verify that the frontend and backend signaling event names and payloads match.
-2. Run the backend and frontend in a suitable environment.
-3. Test voice communication using two browser sessions.
-4. Verify offer/answer exchange and ICE candidate delivery.
-5. Check microphone muting, audio playback, and peer disconnection.
-6. Record the actual test results and fix any issues found.
+1. Test WebRTC functionality in Microsoft Edge.
+2. Test WebRTC functionality in Mozilla Firefox.
+3. Perform additional voice-disconnection and reconnection tests.
+4. Test under different network conditions.
+5. Record any issues found during future testing.
+
+These activities are additional validation tasks. They do not change the successful results of the five ProxiSpeak tests documented in Section 9.
 
 ## 11. Conclusion
 
-The work completed so far provided practical experience with microphone access, WebRTC peer connection demos, ICE candidate gathering, and important WebRTC APIs.
+The work completed provided practical experience with microphone access, WebRTC peer connection demos, ICE candidate gathering, signaling concepts, and important WebRTC APIs.
 
-The ProxiSpeak frontend voice-chat module and backend signaling handlers have also been added to prepare for voice communication.
+The ProxiSpeak frontend voice-chat module and backend signaling handlers were integrated and tested.
 
-The next priority is to verify the integration between the frontend and backend and complete end-to-end testing. Until those tests succeed, the ProxiSpeak voice-chat integration must be considered pending rather than fully completed.
+Testing with two separate browser windows confirmed that both players could enter the same virtual office, move around the environment, receive real-time position updates, detect nearby players, and communicate through WebRTC voice when within the configured 100-pixel proximity range.
+
+**Final Testing Result:** All five ProxiSpeak multiplayer validation checks passed successfully. Additional cross-browser and network-condition testing remains available for future validation.
