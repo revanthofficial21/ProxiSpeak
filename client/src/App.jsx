@@ -1,4 +1,3 @@
-
 import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import useVoiceChat from "./useVoiceChat";
@@ -513,12 +512,11 @@ export default function App() {
     }
 
     client.emit("player:setName", name, (response) => {
-      if (!response?.success) {
-        setNameError(response?.error || "Could not save your name.");
+      if (!response?.ok) {
+        setNameError(response?.message || "Could not save your name.");
         return;
       }
-
-      setSavedName(response.name || name);
+      setSavedName(response.player?.name || name);
       setNameError("");
     });
   };
@@ -531,12 +529,14 @@ export default function App() {
     const client = socketRef.current;
 
     if (!client?.connected) return;
-
+    
     client.emit("player:setAvatarColor", color, (response) => {
-      if (!response?.success) {
+      if (!response?.ok) {
         setNameError(
-          response?.error || "Could not save your avatar colour."
+          response?.message || "Could not save your avatar colour."
         );
+      } else {
+        setNameError("");
       }
     });
   };
