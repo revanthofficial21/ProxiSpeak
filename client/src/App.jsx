@@ -1,3 +1,4 @@
+
 import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import useVoiceChat from "./useVoiceChat";
@@ -10,36 +11,69 @@ const SPEED = 240;
 const AVATAR_RADIUS = 20;
 const DEFAULT_AVATAR_COLOR = "#6ee7b7";
 
+// Furniture and room walls are collision obstacles.
+// The bottom wall has a gap to create the meeting-room entrance.
 const obstacles = [
-  { x: 100, y: 120, width: 120, height: 55 },
-  { x: 300, y: 120, width: 120, height: 55 },
-  { x: 100, y: 300, width: 120, height: 55 },
-  { x: 300, y: 300, width: 120, height: 55 },
-  { x: 600, y: 180, width: 220, height: 90 },
+  // Work-area desks — smaller dimensions for wider walking paths
+  { x: 100, y: 120, width: 100, height: 45 },
+  { x: 300, y: 120, width: 100, height: 45 },
+  { x: 100, y: 300, width: 100, height: 45 },
+  { x: 300, y: 300, width: 100, height: 45 },
+
+  // Meeting-room walls
+  { x: 580, y: 165, width: 270, height: 12 },
+  { x: 580, y: 165, width: 12, height: 220 },
+  { x: 838, y: 165, width: 12, height: 220 },
+
+  // Bottom wall with doorway
+  { x: 580, y: 373, width: 90, height: 12 },
+  { x: 760, y: 373, width: 90, height: 12 },
+
+  // Meeting-room table
+  { x: 665, y: 225, width: 100, height: 45 },
 ];
 
 function drawOfficeFurniture(ctx) {
+  // Work-area desks
   obstacles.slice(0, 4).forEach((desk) => {
     ctx.fillStyle = "#475569";
     ctx.fillRect(desk.x, desk.y, desk.width, desk.height);
+
     ctx.strokeStyle = "#94a3b8";
     ctx.lineWidth = 2;
     ctx.strokeRect(desk.x, desk.y, desk.width, desk.height);
+
     ctx.fillStyle = "#38bdf8";
     ctx.fillRect(desk.x + 42, desk.y + 8, 36, 20);
   });
 
-  const table = obstacles[4];
+  // Meeting-room walls
+  ctx.fillStyle = "#64748b";
+  obstacles.slice(4, 9).forEach((wall) => {
+    ctx.fillRect(wall.x, wall.y, wall.width, wall.height);
+  });
+
+  // Meeting-room table
+  const table = obstacles[9];
+
   ctx.fillStyle = "#854d0e";
   ctx.fillRect(table.x, table.y, table.width, table.height);
+
   ctx.strokeStyle = "#fbbf24";
+  ctx.lineWidth = 2;
   ctx.strokeRect(table.x, table.y, table.width, table.height);
 
+  // Area labels
   ctx.fillStyle = "#cbd5e1";
   ctx.font = "16px Arial";
   ctx.textAlign = "left";
   ctx.fillText("WORK AREA", 100, 85);
-  ctx.fillText("MEETING ROOM", 620, 155);
+  ctx.fillText("MEETING ROOM", 610, 145);
+
+  // Doorway label
+  ctx.font = "12px Arial";
+  ctx.fillStyle = "#2dd4bf";
+  ctx.fillText("ENTRANCE", 680, 405);
 }
 
 function hitsObstacle(x, y) {
@@ -48,6 +82,7 @@ function hitsObstacle(x, y) {
       obstacle.x,
       Math.min(x, obstacle.x + obstacle.width)
     );
+
     const closestY = Math.max(
       obstacle.y,
       Math.min(y, obstacle.y + obstacle.height)
@@ -95,6 +130,7 @@ export default function App() {
     resumeAudio,
   } = useVoiceChat(socket, nearbyPlayers, playersRef);
 
+  // Socket connection and multiplayer events
   useEffect(() => {
     const client = io(SERVER_URL);
 
@@ -234,6 +270,7 @@ export default function App() {
     };
   }, []);
 
+  // Canvas rendering and player movement
   useEffect(() => {
     const canvas = canvasRef.current;
     const canvasWrap = canvasWrapRef.current;
@@ -360,11 +397,13 @@ export default function App() {
         }
       }
 
+      // Draw world background
       ctx.clearRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
 
       ctx.fillStyle = "#101827";
       ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
 
+      // Draw grid
       ctx.strokeStyle = "#263449";
       ctx.lineWidth = 1;
 
@@ -384,6 +423,7 @@ export default function App() {
 
       drawOfficeFurniture(ctx);
 
+      // Draw players
       for (const player of playersRef.current.values()) {
         const isMe = player.id === client?.id;
 
