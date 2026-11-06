@@ -14,18 +14,18 @@ const DEFAULT_AVATAR_COLOR = "#6ee7b7";
 // Furniture and room walls are collision obstacles.
 // The bottom wall has a gap to create the meeting-room entrance.
 const obstacles = [
-  // Work-area desks
-  { x: 100, y: 120, width: 120, height: 55 },
-  { x: 300, y: 120, width: 120, height: 55 },
-  { x: 100, y: 300, width: 120, height: 55 },
-  { x: 300, y: 300, width: 120, height: 55 },
+  // Work-area desks — smaller dimensions for wider walking paths
+  { x: 100, y: 120, width: 100, height: 45 },
+  { x: 300, y: 120, width: 100, height: 45 },
+  { x: 100, y: 300, width: 100, height: 45 },
+  { x: 300, y: 300, width: 100, height: 45 },
 
   // Meeting-room walls
   { x: 580, y: 165, width: 270, height: 12 },
   { x: 580, y: 165, width: 12, height: 220 },
   { x: 838, y: 165, width: 12, height: 220 },
 
-  // Bottom wall: two sections with a doorway between them
+  // Bottom wall with doorway
   { x: 580, y: 373, width: 90, height: 12 },
   { x: 760, y: 373, width: 90, height: 12 },
 
