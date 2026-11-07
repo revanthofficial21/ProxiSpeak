@@ -2,7 +2,6 @@ const express = require('express');
 const http = require('http');
 const cors = require('cors');
 const { Server } = require('socket.io');
-
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 3000;
@@ -11,21 +10,17 @@ const WORLD_HEIGHT = 600;
 const PROXIMITY_DISTANCE = 100;
 const players = new Map();
 const voiceParticipants = new Set();
-
 app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173' }));
 app.use(express.json());
-
 const io = new Server(server, {
   cors: {
     origin: process.env.CLIENT_URL || 'http://localhost:5173',
     methods: ['GET', 'POST'],
   },
 });
-
 app.get('/', (_req, res) => {
   res.json({ status: 'ProxiSpeak server running', connectedPlayers: players.size });
 });
-
 function publicPlayer(player) {
   return { id: player.id, x: player.x, y: player.y, name: player.name, avatarColor: player.avatarColor };
 }
@@ -38,7 +33,6 @@ function updateProximity() {
     const nearby = all.filter((other) => other.id !== player.id && distance(player, other) <= PROXIMITY_DISTANCE);
     io.to(player.id).emit('player:nearby', nearby.map(publicPlayer));
   }
-  // Emit enter/leave transitions to both clients.
   for (let i = 0; i < all.length; i++) {
     for (let j = i + 1; j < all.length; j++) {
       const a = all[i], b = all[j];
@@ -57,7 +51,6 @@ function updateProximity() {
   }
 }
 const proximityPairs = new Set();
-
 io.on('connection', (socket) => {
   const player = {
     id: socket.id,
@@ -70,7 +63,6 @@ io.on('connection', (socket) => {
   socket.emit('world:state', Array.from(players.values()).map(publicPlayer));
   socket.broadcast.emit('player:joined', publicPlayer(player));
   updateProximity();
-
   socket.on('player:move', (position) => {
     if (!position || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
     player.x = Math.max(20, Math.min(WORLD_WIDTH - 20, position.x));
@@ -78,7 +70,6 @@ io.on('connection', (socket) => {
     io.emit('player:moved', publicPlayer(player));
     updateProximity();
   });
-
   socket.on('player:setName', (name, callback) => {
     const cleanName = typeof name === 'string' ? name.trim().slice(0, 24) : '';
     if (!cleanName) {
@@ -89,7 +80,6 @@ io.on('connection', (socket) => {
     io.emit('player:renamed', publicPlayer(player));
     if (typeof callback === 'function') callback({ ok: true, player: publicPlayer(player) });
   });
-
   socket.on('player:setAvatarColor', (color, callback) => {
     if (typeof color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(color)) {
       if (typeof callback === 'function') callback({ ok: false, message: 'Invalid color.' });
@@ -99,8 +89,6 @@ io.on('connection', (socket) => {
     io.emit('player:avatarColorUpdated', publicPlayer(player));
     if (typeof callback === 'function') callback({ ok: true, player: publicPlayer(player) });
   });
-
-  // WebRTC signalling relay: audio itself travels peer-to-peer, not through this server.
   socket.on('voice:join', () => {
     voiceParticipants.add(socket.id);
     for (const peerId of voiceParticipants) {
@@ -125,7 +113,6 @@ io.on('connection', (socket) => {
       io.to(to).emit(eventName, { ...payload, from: socket.id });
     });
   }
-
   socket.on('disconnect', () => {
     players.delete(socket.id);
     voiceParticipants.delete(socket.id);
@@ -135,5 +122,4 @@ io.on('connection', (socket) => {
     updateProximity();
   });
 });
-
 server.listen(PORT, () => console.log(`ProxiSpeak server listening on http://localhost:${PORT}`));
