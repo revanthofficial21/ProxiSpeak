@@ -2,6 +2,7 @@
 export function io() {
   const handlers = new Map();
   const emitted = [];
+  let notesState = { content: "", actionItems: [], updatedAt: null };
   const socket = {
     id: "test-player",
     connected: true,
@@ -18,30 +19,60 @@ export function io() {
       emitted.push({ event, args });
       const callback = args.find((argument) => typeof argument === "function");
       if (callback) {
-        const response =
-          event === "player:joinRoom"
-            ? { success: true, room: args[0] }
-            : event === "meeting:join"
-              ? {
-                  success: true,
-                  participants: [
-                    {
-                      id: "player-two",
-                      name: "Second Player",
-                      handRaised: false,
-                    },
-                  ],
-                }
-              : { success: true };
+        let response = { success: true };
+        if (event === "player:joinRoom") {
+          response = { success: true, room: args[0] };
+        } else if (event === "meeting:notes:load") {
+          response = { success: true, state: notesState };
+        } else if (event === "meeting:notes:update") {
+          notesState = { ...notesState, content: args[0].content };
+          response = { success: true, state: notesState };
+        } else if (event === "meeting:action:create") {
+          notesState = {
+            ...notesState,
+            actionItems: [
+              ...notesState.actionItems,
+              {
+                id: "created-action",
+                ...args[0],
+                completed: false,
+              },
+            ],
+          };
+          response = { success: true, state: notesState };
+        } else if (event === "meeting:action:update") {
+          notesState = {
+            ...notesState,
+            actionItems: notesState.actionItems.map((item) =>
+              item.id === args[0].id
+                ? { ...item, completed: args[0].completed }
+                : item
+            ),
+          };
+          response = { success: true, state: notesState };
+        }
         callback(response);
       }
     },
     timeout() {
-      return { emit() {} };
+      return {
+        emit(event, ...args) {
+          emitted.push({ event, args });
+          const callback = args.find(
+            (argument) => typeof argument === "function"
+          );
+          if (event === "meeting:join" && callback) {
+            callback(null, { success: true, participants: [] });
+          }
+        },
+      };
     },
     disconnect() {},
     __handlers: handlers,
     __emitted: emitted,
+    __setMeetingNotesState(state) {
+      notesState = state;
+    },
   };
   globalThis.__testSocket = socket;
   return socket;

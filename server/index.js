@@ -21,6 +21,7 @@ const {
   relayWebRtcSignal,
 } = require("./lib/meeting-call");
 const { registerMeetingEvents } = require("./lib/meeting-events");
+const { registerMeetingNotesEvents } = require("./lib/meeting-notes");
 const { attachMesh } = require("./lib/mesh");
 const { initializeRoomCatalog } = require("./lib/roomCatalog");
 const { createRateLimiter } = require("./lib/rate-limit");
@@ -339,6 +340,12 @@ io.on("connection", async (socket) => {
     players,
     participantIds: meetingCallParticipants,
     raisedHands: meetingCallRaisedHands,
+  });
+  registerMeetingNotesEvents(socket, {
+    io,
+    players,
+    participantIds: meetingCallParticipants,
+    collection: db.collection("meetingNotes"),
   });
 
   const playerChannel = roomChannel(player.room);

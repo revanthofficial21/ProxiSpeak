@@ -10,6 +10,7 @@ import useVoiceChat from "./useVoiceChat";
 import useScreenShare from "./useScreenShare";
 import useAudioDevices from "./useAudioDevices";
 import Landing from "./Landing";
+import MeetingNotes from "./MeetingNotes";
 import { furnitureOf, zonesOf, plantsOf } from "./office";
 import useRoomLayout from "./useRoomLayout";
 import "./App.css";
@@ -2422,6 +2423,14 @@ export default function App() {
           <p className="meeting-call-error" role="alert">
             {meetingCallError}
           </p>
+        )}
+        {currentRoom === "Meeting Room" && (
+          <MeetingNotes
+            socket={socket}
+            enabled={meetingCallJoined}
+            playerName={playerName}
+            participants={meetingParticipants}
+          />
         )}
       </section>
 

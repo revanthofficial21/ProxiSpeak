@@ -61,6 +61,7 @@ ProxiSpeak/
 ├── client/                     # React frontend
 │   ├── src/
 │   │   ├── App.jsx             # Canvas, profiles, rooms, chat, peer signaling + UI
+│   │   ├── MeetingNotes.jsx    # Shared Meeting Room notes and action items
 │   │   ├── useVoiceChat.js     # Microphone, spatial mixer, volume, audio resume
 │   │   ├── useScreenShare.js   # Meeting Room screen sharing
 │   │   ├── App.css             # Styling
@@ -75,6 +76,7 @@ ProxiSpeak/
 │   ├── lib/player-persistence.js # Position, profile and reconnect persistence
 │   ├── lib/rooms.js             # Room membership and presence snapshots
 │   ├── lib/meeting-call.js      # Meeting call membership and signaling rules
+│   ├── lib/meeting-notes.js     # Meeting notes persistence and authorized events
 │   ├── lib/proximity.js         # Pure-JS proximity oracle
 │   ├── tests/                   # Backend unit tests
 │   └── audit.js                # Spatial audit — correctness + latency benchmark
@@ -117,6 +119,10 @@ ProxiSpeak/
    participants can raise or lower a hand and send 👍, 👏, 😂, ❤️, or 🙌
    reactions. Hand status appears beside participant names, and reactions
    briefly appear for everyone in the Meeting Room.
+9. Meeting notes. Active Meeting Room call participants share a persisted note
+    and action-item list. Notes can be edited; action items have a title,
+    participant assignee, optional due date, and pending/completed status. Note
+    and action changes are broadcast to the call participants in real time.
 7. Data Model
 The players collection (MongoDB):
 Field	Type	Notes
@@ -128,6 +134,11 @@ location	[x, y]	Geospatial point — indexed with a 2d index (min: 0, max: 1000)
 avatarPrefs	object	Validated avatar choices, currently { color: "mint" | "blue" | "violet" | "coral" | "gold" }
 connected	boolean	Whether the socket session is currently connected
 createdAt / updatedAt	Date	Record creation and last update timestamps
+
+The `meetingNotes` collection stores the Meeting Room's shared record under
+`_id: "Meeting Room"`, with note `content`, an `actionItems` array, and
+timestamps. Each action item has a server-generated ID, title, assignee display
+name, optional `YYYY-MM-DD` due date, completion status, and creation time.
 
 
 Players can save their display name (1–30 characters) and avatar color from
@@ -150,6 +161,10 @@ player:joinRoom	allow-listed room name
 meeting:join / meeting:leave	join or leave the Meeting Room call
 meeting:hand	{ raised: boolean }
 meeting:reaction	{ emoji } (👍, 👏, 😂, ❤️, or 🙌)
+meeting:notes:load	load the persisted note and action items
+meeting:notes:update	{ content }
+meeting:action:create	{ title, assignee, dueDate? }
+meeting:action:update	{ id, completed }
 chat:send	message text (current room)
 world-chat:send	message text (World Chat)
 player:move	{ x, y }
@@ -164,6 +179,7 @@ room:state	{ room, players }
 meeting:participant-joined / meeting:participant-left	participant / socket id
 meeting:hand	{ id, name, raised }
 meeting:reaction	{ id, name, emoji }
+meeting:notes:state	{ content, actionItems, updatedAt }
 player:joined / player:moved / player:left	player / id
 player:renamed	player
 player:avatarPrefs	player

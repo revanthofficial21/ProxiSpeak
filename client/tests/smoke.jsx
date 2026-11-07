@@ -168,10 +168,19 @@ async function main() {
   const roomChatInput = roomChat.querySelector("input");
   const setInputValue = (input, value) => {
     Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype,
+      input instanceof window.HTMLTextAreaElement
+        ? window.HTMLTextAreaElement.prototype
+        : input instanceof window.HTMLSelectElement
+          ? window.HTMLSelectElement.prototype
+          : window.HTMLInputElement.prototype,
       "value"
     ).set.call(input, value);
-    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    input.dispatchEvent(
+      new window.Event(
+        input instanceof window.HTMLSelectElement ? "change" : "input",
+        { bubbles: true }
+      )
+    );
   };
 
   await act(async () => {
@@ -308,6 +317,119 @@ async function main() {
   check(
     "meeting reactions disappear automatically",
     !container.querySelector(".meeting-reaction-pop")
+  );
+
+  check(
+    "meeting notes require joining the call",
+    container.querySelector(".meeting-notes")?.textContent.includes(
+      "Join the Meeting Room call"
+    )
+  );
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: {
+      getUserMedia: async () => ({
+        getTracks: () => [],
+        getAudioTracks: () => [],
+        getVideoTracks: () => [],
+      }),
+    },
+  });
+  await act(async () => {
+    container.querySelector(".meeting-panel-heading button").click();
+  });
+  const notesPanel = container.querySelector(".meeting-notes");
+  check(
+    "joining the Meeting Room call loads shared notes",
+    notesPanel?.querySelector("#meeting-notes-content") &&
+      globalThis.__testSocket.__emitted.some(
+        ({ event }) => event === "meeting:notes:load"
+      )
+  );
+
+  const sharedState = {
+    content: "Decide launch date",
+    actionItems: [
+      {
+        id: "action-one",
+        title: "Share meeting recap",
+        assignee: "Player test",
+        dueDate: "2026-11-30",
+        completed: false,
+      },
+    ],
+    updatedAt: "2026-11-07T00:00:00.000Z",
+  };
+  globalThis.__testSocket.__setMeetingNotesState(sharedState);
+  act(() => {
+    globalThis.__testSocket.__handlers.get("meeting:notes:state")(sharedState);
+  });
+  check(
+    "server note and action updates render for meeting participants",
+    notesPanel.querySelector("#meeting-notes-content").value ===
+      "Decide launch date" &&
+      notesPanel.textContent.includes("Share meeting recap") &&
+      notesPanel.textContent.includes("Due 2026-11-30")
+  );
+
+  const notesInput = notesPanel.querySelector("#meeting-notes-content");
+  await act(async () => setInputValue(notesInput, "Updated launch decision"));
+  await act(async () => {
+    notesPanel.querySelector("form").dispatchEvent(
+      new window.Event("submit", { bubbles: true, cancelable: true })
+    );
+  });
+  check(
+    "editing and saving shared notes emits the validated notes event",
+    globalThis.__testSocket.__emitted.some(
+      ({ event, args }) =>
+        event === "meeting:notes:update" &&
+        args[0]?.content === "Updated launch decision"
+    )
+  );
+
+  await act(async () => {
+    setInputValue(
+      notesPanel.querySelector("#meeting-action-title"),
+      "Send follow-up"
+    );
+    setInputValue(
+      notesPanel.querySelector("#meeting-action-assignee"),
+      "Player test"
+    );
+    setInputValue(
+      notesPanel.querySelector("#meeting-action-due-date"),
+      "2026-12-01"
+    );
+  });
+  await act(async () => {
+    notesPanel.querySelectorAll("form")[1].dispatchEvent(
+      new window.Event("submit", { bubbles: true, cancelable: true })
+    );
+  });
+  check(
+    "creating an action item sends title, assignee, and optional due date",
+    globalThis.__testSocket.__emitted.some(
+      ({ event, args }) =>
+        event === "meeting:action:create" &&
+        args[0]?.title === "Send follow-up" &&
+        args[0]?.assignee === "Player test" &&
+        args[0]?.dueDate === "2026-12-01"
+    )
+  );
+
+  const completionCheckbox = notesPanel.querySelector(
+    'input[type="checkbox"]'
+  );
+  await act(async () => completionCheckbox.click());
+  check(
+    "action items can be marked completed or pending",
+    globalThis.__testSocket.__emitted.some(
+      ({ event, args }) =>
+        event === "meeting:action:update" &&
+        args[0]?.id === "action-one" &&
+        args[0]?.completed === true
+    )
   );
 
   await act(async () => {
