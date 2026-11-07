@@ -9,6 +9,7 @@ const { MongoClient } = require("mongodb");
 const { createActivityNotification, getNewProximityEntries } = require("./activity");
 const { normalizeAvatarPrefs, saveAvatarPrefs } = require("./player-persistence");
 const { createChatMessage, deliverChatMessage } = require("./lib/chat");
+const { createBreakoutRoomManager } = require("./lib/breakout-rooms");
 const {
   buildDefaultLayout,
   getLayout,
@@ -106,6 +107,13 @@ const proximityState = new Map();
 const nearbyPayloadState = new Map();
 const meetingCallParticipants = new Set();
 const meetingCallRaisedHands = new Set();
+const breakoutRoomManager = createBreakoutRoomManager({
+  io,
+  players,
+  participantIds: meetingCallParticipants,
+  chatLimiter,
+});
+const MEETING_CALL_CHANNEL = `meeting-call:${MEETING_ROOM}`;
 const activeShares = new Map();
 const enqueuePlayerPersistence = createPlayerPersistenceQueue();
 
@@ -216,6 +224,7 @@ function relaySignal(event, fromId, toId, payload) {
     players,
     proximityState,
     meetingCallParticipants,
+    breakoutMembership: breakoutRoomManager.getMemberships(),
   });
 }
 
@@ -302,13 +311,25 @@ async function updatePlayerProximity(socket, player) {
 }
 
 async function leaveMeetingCall(socket) {
-  if (!meetingCallParticipants.delete(socket.id)) return;
+  if (!meetingCallParticipants.has(socket.id)) return;
 
-  socket.to(`meeting-call:${MEETING_ROOM}`).emit(
-    "meeting:participant-left",
-    socket.id
-  );
-  await socket.leave(`meeting-call:${MEETING_ROOM}`);
+  const player = players.get(socket.id);
+  const wasHandRaised = meetingCallRaisedHands.delete(socket.id);
+  if (player) {
+    const channel = roomChannel(player.room);
+    if (channel) {
+      if (wasHandRaised) {
+        socket.to(channel).emit("meeting:hand", {
+          id: socket.id,
+          name: player.name || `Player ${socket.id.slice(0, 4)}`,
+          raised: false,
+        });
+      }
+      socket.to(channel).emit("meeting:participant-left", socket.id);
+    }
+  }
+  await breakoutRoomManager.leaveCall(socket.id);
+  await socket.leave(MEETING_CALL_CHANNEL);
 }
 
 // Emit to everyone in a room, guarding the channel: roomChannel() returns null
@@ -347,6 +368,7 @@ io.on("connection", async (socket) => {
     participantIds: meetingCallParticipants,
     collection: db.collection("meetingNotes"),
   });
+  breakoutRoomManager.registerSocket(socket);
 
   const playerChannel = roomChannel(player.room);
   if (playerChannel) {
@@ -500,6 +522,9 @@ io.on("connection", async (socket) => {
       }
 
       players.set(socket.id, updatedPlayer);
+      if (meetingCallParticipants.has(socket.id)) {
+        breakoutRoomManager.broadcastState();
+      }
       emitToRoom(
         updatedPlayer.room,
         "player:renamed",
@@ -771,6 +796,25 @@ io.on("connection", async (socket) => {
       sentAt: new Date().toISOString(),
     };
 
+    const breakoutRoomId =
+      scope === "room"
+        ? breakoutRoomManager.getBreakoutRoomId(socket.id)
+        : null;
+    if (breakoutRoomId) {
+      io.to(breakoutRoomManager.getRoomMembers(breakoutRoomId)).emit(
+        "breakout:chat:message",
+        {
+          id: base.id,
+          senderId: socket.id,
+          senderName: base.senderName,
+          text: base.text,
+          sentAt: message.sentAt,
+        }
+      );
+      if (typeof callback === "function") callback({ success: true });
+      return;
+    }
+
     const channel = scope === "room" ? roomChannel(sender.room) : null;
     const delivered = deliverChatMessage({
       scope,
@@ -778,7 +822,16 @@ io.on("connection", async (socket) => {
       room: channel,
       emitWorld: (payload) => io.emit("chat:message", payload),
       emitRoom: (room, payload) => {
-        io.to(room).emit("chat:message", payload);
+        const breakoutMembers =
+          sender.room === MEETING_ROOM
+            ? Array.from(breakoutRoomManager.getMemberships().keys())
+            : [];
+        const audience = io.to(room);
+        if (breakoutMembers.length > 0) {
+          audience.except(breakoutMembers).emit("chat:message", payload);
+        } else {
+          audience.emit("chat:message", payload);
+        }
         return true;
       },
     });
@@ -858,7 +911,7 @@ io.on("connection", async (socket) => {
         return;
       }
 
-      const wasMeetingParticipant = meetingCallParticipants.delete(socket.id);
+      const wasMeetingParticipant = meetingCallParticipants.has(socket.id);
       const wasHandRaised = meetingCallRaisedHands.delete(socket.id);
       if (wasMeetingParticipant && previousChannel) {
         if (wasHandRaised) {
@@ -871,6 +924,10 @@ io.on("connection", async (socket) => {
         socket
           .to(previousChannel)
           .emit("meeting:participant-left", socket.id);
+      }
+      if (wasMeetingParticipant) {
+        await breakoutRoomManager.leaveCall(socket.id);
+        await socket.leave(MEETING_CALL_CHANNEL);
       }
 
       // Drop proximity to everyone in the old space.
@@ -913,7 +970,7 @@ io.on("connection", async (socket) => {
   });
 
   // Join the Meeting Room call — talk to room-mates regardless of distance.
-  socket.on("meeting:join", (callback) => {
+  socket.on("meeting:join", async (callback) => {
     const reply = (response) => {
       if (typeof callback === "function") callback(response);
     };
@@ -925,6 +982,15 @@ io.on("connection", async (socket) => {
     }
 
     meetingCallParticipants.add(socket.id);
+    try {
+      await socket.join(MEETING_CALL_CHANNEL);
+    } catch (error) {
+      meetingCallParticipants.delete(socket.id);
+      reply({ success: false, error: "Could not join the meeting call" });
+      console.error("Failed to join meeting call channel:", error.message);
+      return;
+    }
+    const breakoutState = breakoutRoomManager.joinCall(socket.id);
     const participants = getMeetingCallParticipants(
       meetingCallParticipants,
       players,
@@ -937,31 +1003,27 @@ io.on("connection", async (socket) => {
         id: currentPlayer.id,
         name: currentPlayer.name || `Player ${currentPlayer.id.slice(0, 4)}`,
         handRaised: meetingCallRaisedHands.has(currentPlayer.id),
+        breakoutRoomId:
+          breakoutRoomManager.getBreakoutRoomId(currentPlayer.id),
       });
     }
 
-    reply({ success: true, participants });
+    reply({ success: true, participants, breakoutState });
   });
 
-  socket.on("meeting:leave", (callback) => {
-    const currentPlayer = players.get(socket.id);
-    const wasMeetingParticipant = meetingCallParticipants.delete(socket.id);
-    const wasHandRaised = meetingCallRaisedHands.delete(socket.id);
-
-    if (currentPlayer && wasMeetingParticipant) {
-      const channel = roomChannel(currentPlayer.room);
-      if (channel) {
-        if (wasHandRaised) {
-          socket.to(channel).emit("meeting:hand", {
-            id: socket.id,
-            name: currentPlayer.name || `Player ${socket.id.slice(0, 4)}`,
-            raised: false,
-          });
+  socket.on("meeting:leave", async (callback) => {
+    const wasMeetingParticipant = meetingCallParticipants.has(socket.id);
+    if (wasMeetingParticipant) {
+      try {
+        await leaveMeetingCall(socket);
+      } catch (error) {
+        console.error("Failed to leave meeting call:", error.message);
+        if (typeof callback === "function") {
+          callback({ success: false, error: "Could not leave the meeting call" });
         }
-        socket.to(channel).emit("meeting:participant-left", socket.id);
+        return;
       }
     }
-
     if (typeof callback === "function") callback({ success: true });
   });
 
@@ -995,6 +1057,9 @@ io.on("connection", async (socket) => {
     const disconnectedPlayer = players.get(socket.id);
     meetingCallParticipants.delete(socket.id);
     meetingCallRaisedHands.delete(socket.id);
+    breakoutRoomManager.leaveCall(socket.id).catch((error) => {
+      console.error("Failed to clear breakout room on disconnect:", error.message);
+    });
     players.delete(socket.id);
     spawnSlots.delete(socket.id);
 

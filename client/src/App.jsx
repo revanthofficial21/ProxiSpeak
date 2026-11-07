@@ -11,6 +11,7 @@ import useScreenShare from "./useScreenShare";
 import useAudioDevices from "./useAudioDevices";
 import Landing from "./Landing";
 import MeetingNotes from "./MeetingNotes";
+import BreakoutRooms from "./BreakoutRooms";
 import { furnitureOf, zonesOf, plantsOf } from "./office";
 import useRoomLayout from "./useRoomLayout";
 import "./App.css";
@@ -435,6 +436,7 @@ export default function App() {
   const meetingStreamRef = useRef(null);
   const meetingAudioTrackRef = useRef(null);
   const meetingParticipantsRef = useRef(new Set());
+  const breakoutMembershipRef = useRef(new Map());
   const meetingCallActiveRef = useRef(false);
   const localMeetingVideoRef = useRef(null);
   const meetingReactionTimersRef = useRef(new Map());
@@ -492,6 +494,7 @@ export default function App() {
   const [roomsError, setRoomsError] = useState("");
   const [roomError, setRoomError] = useState("");
   const [meetingParticipants, setMeetingParticipants] = useState([]);
+  const [breakoutState, setBreakoutState] = useState(null);
   const [meetingHandRaised, setMeetingHandRaised] = useState(false);
   const [meetingReactions, setMeetingReactions] = useState([]);
 
@@ -567,10 +570,30 @@ export default function App() {
     });
   }, [detachRemoteStream]);
 
+  const canConnectMeetingPeer = useCallback((peerId) => {
+    const socketId = socketRef.current?.id;
+    if (!socketId) return false;
+
+    const localBreakoutRoom =
+      breakoutMembershipRef.current.get(socketId) || null;
+    const peerBreakoutRoom =
+      breakoutMembershipRef.current.get(peerId) || null;
+    if (localBreakoutRoom || peerBreakoutRoom) {
+      return Boolean(
+        meetingCallActiveRef.current &&
+          meetingParticipantsRef.current.has(peerId) &&
+          localBreakoutRoom &&
+          localBreakoutRoom === peerBreakoutRoom
+      );
+    }
+
+    return true;
+  }, []);
+
   // Create (or return) the RTCPeerConnection for a nearby peer.
   const createPeer = useCallback((peerId, initiator) => {
     const socket = socketRef.current;
-    if (!socket) return null;
+    if (!socket || !canConnectMeetingPeer(peerId)) return null;
 
     const existingPeer = peersRef.current.get(peerId);
     const pc = existingPeer || new RTCPeerConnection({ iceServers: ICE_SERVERS });
@@ -681,7 +704,43 @@ export default function App() {
     }
 
     return pc;
-  }, [attachRemoteStream, localStreamRef]);
+  }, [attachRemoteStream, canConnectMeetingPeer, localStreamRef]);
+
+  const applyBreakoutState = useCallback((state) => {
+    if (
+      !state ||
+      typeof state !== "object" ||
+      !Array.isArray(state.participants) ||
+      !Array.isArray(state.rooms)
+    ) {
+      return;
+    }
+
+    breakoutMembershipRef.current = new Map(
+      state.participants
+        .filter((participant) => participant && typeof participant.id === "string")
+        .map((participant) => [
+          participant.id,
+          typeof participant.breakoutRoomId === "string"
+            ? participant.breakoutRoomId
+            : null,
+        ])
+    );
+    setBreakoutState(state);
+
+    if (!meetingCallActiveRef.current) return;
+    const peerIds = new Set([
+      ...meetingParticipantsRef.current,
+      ...peersRef.current.keys(),
+    ]);
+    for (const peerId of peerIds) {
+      if (!canConnectMeetingPeer(peerId)) {
+        closePeer(peerId);
+      } else if (meetingParticipantsRef.current.has(peerId)) {
+        createPeer(peerId, socketRef.current?.id < peerId);
+      }
+    }
+  }, [canConnectMeetingPeer, closePeer, createPeer]);
 
   // Apply ICE candidates that arrived before the remote description was set.
   const flushCandidates = useCallback(async (peerId, pc) => {
@@ -721,7 +780,13 @@ export default function App() {
 
   const handleOffer = useCallback(
     ({ from, sdp }) => {
-      if (typeof from !== "string" || !sdp) return;
+      if (
+        typeof from !== "string" ||
+        !sdp ||
+        !canConnectMeetingPeer(from)
+      ) {
+        return;
+      }
 
       // If our mic isn't on yet, hold the offer until it is — otherwise we'd
       // answer without our audio track and could never be heard.
@@ -735,7 +800,7 @@ export default function App() {
 
       answerOffer(from, sdp);
     },
-    [answerOffer]
+    [answerOffer, canConnectMeetingPeer]
   );
 
   const handleAnswer = useCallback(
@@ -754,7 +819,13 @@ export default function App() {
   );
 
   const handleIce = useCallback(async ({ from, candidate }) => {
-    if (typeof from !== "string" || !candidate) return;
+    if (
+      typeof from !== "string" ||
+      !candidate ||
+      !canConnectMeetingPeer(from)
+    ) {
+      return;
+    }
 
     const pc = peersRef.current.get(from);
 
@@ -772,7 +843,7 @@ export default function App() {
     } catch (error) {
       console.error("Failed to add ICE candidate:", error.message);
     }
-  }, []);
+  }, [canConnectMeetingPeer]);
 
   useEffect(() => {
     audioEnabledRef.current = voiceEnabled;
@@ -850,6 +921,8 @@ export default function App() {
     const participantIds = Array.from(meetingParticipantsRef.current);
     meetingCallActiveRef.current = false;
     meetingParticipantsRef.current.clear();
+    breakoutMembershipRef.current.clear();
+    setBreakoutState(null);
 
     participantIds.forEach(removeMeetingTracks);
 
@@ -867,6 +940,8 @@ export default function App() {
     }
     setMeetingCallJoined(false);
     setMeetingParticipants([]);
+    breakoutMembershipRef.current.clear();
+    setBreakoutState(null);
     setMeetingHandRaised(false);
     setRemoteVideoStreams({});
     setMeetingMicEnabled(false);
@@ -986,15 +1061,13 @@ export default function App() {
         meetingParticipantsRef.current = new Set(
           participants.map((participant) => participant.id)
         );
+        applyBreakoutState(response.breakoutState);
         setMeetingParticipants(participants);
         setMeetingHandRaised(
           participants.find((participant) => participant.id === socket.id)
             ?.handRaised === true
         );
         setMeetingCallJoined(true);
-        participants.forEach((participant) =>
-          createPeer(participant.id, socket.id < participant.id)
-        );
       });
     } catch (error) {
       if (acquiredStream) {
@@ -1016,7 +1089,12 @@ export default function App() {
           : error.message || "Could not access a microphone or camera."
       );
     }
-  }, [createPeer, currentRoom, meetingCallBusy, localStreamRef]);
+  }, [
+    applyBreakoutState,
+    currentRoom,
+    meetingCallBusy,
+    localStreamRef,
+  ]);
 
   const toggleMeetingMicrophone = useCallback(() => {
     const tracks = meetingStreamRef.current?.getAudioTracks() || [];
@@ -1439,8 +1517,12 @@ export default function App() {
             )
           : [...current, { ...participant, handRaised: participant.handRaised === true }]
       );
-      createPeer(participant.id, socket.id < participant.id);
+      if (canConnectMeetingPeer(participant.id)) {
+        createPeer(participant.id, socket.id < participant.id);
+      }
     });
+
+    socket.on("breakout:state", applyBreakoutState);
 
     socket.on("meeting:hand", (handUpdate) => {
       if (
@@ -1566,6 +1648,8 @@ export default function App() {
     handleIce,
     cleanupMeetingCall,
     removeMeetingTracks,
+    applyBreakoutState,
+    canConnectMeetingPeer,
   ]);
 
   useEffect(() => {
@@ -2430,6 +2514,15 @@ export default function App() {
             enabled={meetingCallJoined}
             playerName={playerName}
             participants={meetingParticipants}
+          />
+        )}
+        {currentRoom === "Meeting Room" && (
+          <BreakoutRooms
+            socket={socket}
+            enabled={meetingCallJoined}
+            playerId={socket?.id}
+            state={breakoutState}
+            onState={applyBreakoutState}
           />
         )}
       </section>

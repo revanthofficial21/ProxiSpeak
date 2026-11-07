@@ -21,8 +21,9 @@ npm test          # from the repo root: server suites + client suites
 The server runner executes test scripts covering player persistence, reconnect
 claims, room changes, proximity, signaling authorization, Meeting Room event
 validation and room isolation, notes/action-item validation, persistence and
-authorization, room/world chat delivery, screen sharing, rate limits, layouts,
-and activity notifications. The client runner executes
+authorization, breakout host/member authorization, room isolation, WebRTC
+breakout-group relay authorization, room/world chat delivery, screen sharing,
+rate limits, layouts, and activity notifications. The client runner executes
 activity tests, an app-rendering smoke test, and occlusion geometry tests.
 
 **This is where a new feature should get its first test.** If the feature has
@@ -63,6 +64,12 @@ say in your notes that you did:
   Edit and save the shared notes in one tab and confirm the other updates; add
   an action item with an assignee and due date, then mark it complete and
   pending. Reload and rejoin to verify the notes and action items persist.
+  Then create a breakout room as the first call participant, assign the second
+  participant, and have them join. Verify room membership and chat are visible
+  only to the appropriate breakout members, and confirm audio/video connects
+  within a breakout but not across breakout boundaries. Move the participant
+  back to the main Meeting Room, close the breakout, and verify host transfer
+  when the host leaves.
 - **Occlusion** — put a desk between the two avatars and the voice should go dull.
 - **Screen share** — Meeting Room, click Share screen. Needs a standalone Chrome,
   Edge or Firefox: embedded previews (VS Code, Electron) cannot capture the screen.

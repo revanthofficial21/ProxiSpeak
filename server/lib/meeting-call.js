@@ -26,7 +26,8 @@ function canRelayWebRtcSignal(
   toId,
   players,
   proximityState,
-  meetingCallParticipants
+  meetingCallParticipants,
+  breakoutMembership = new Map()
 ) {
   if (
     typeof fromId !== "string" ||
@@ -49,12 +50,26 @@ function canRelayWebRtcSignal(
 
   const nearbyPeers = proximityState.get(fromId);
   const isNearby = Boolean(nearbyPeers && nearbyPeers.has(toId));
-  const isMeetingCallMember =
-    fromPlayer.room === MEETING_ROOM &&
-    meetingCallParticipants.has(fromId) &&
-    meetingCallParticipants.has(toId);
+  const fromIsCallMember = meetingCallParticipants.has(fromId);
+  const toIsCallMember = meetingCallParticipants.has(toId);
+  const fromBreakoutRoom = breakoutMembership.get(fromId) || null;
+  const toBreakoutRoom = breakoutMembership.get(toId) || null;
 
-  return isNearby || isMeetingCallMember;
+  if (fromBreakoutRoom || toBreakoutRoom) {
+    return Boolean(
+      fromIsCallMember &&
+        toIsCallMember &&
+        fromBreakoutRoom &&
+        fromBreakoutRoom === toBreakoutRoom
+    );
+  }
+
+  const isSameMeetingCallGroup =
+    fromPlayer.room === MEETING_ROOM &&
+    fromIsCallMember &&
+    toIsCallMember;
+
+  return isNearby || isSameMeetingCallGroup;
 }
 
 function relayWebRtcSignal({
@@ -66,6 +81,7 @@ function relayWebRtcSignal({
   players,
   proximityState,
   meetingCallParticipants,
+  breakoutMembership,
 }) {
   if (
     !canRelayWebRtcSignal(
@@ -73,7 +89,8 @@ function relayWebRtcSignal({
       toId,
       players,
       proximityState,
-      meetingCallParticipants
+      meetingCallParticipants,
+      breakoutMembership
     )
   ) {
     return false;

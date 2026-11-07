@@ -62,6 +62,7 @@ ProxiSpeak/
 │   ├── src/
 │   │   ├── App.jsx             # Canvas, profiles, rooms, chat, peer signaling + UI
 │   │   ├── MeetingNotes.jsx    # Shared Meeting Room notes and action items
+│   │   ├── BreakoutRooms.jsx   # Meeting Room breakout controls and chat
 │   │   ├── useVoiceChat.js     # Microphone, spatial mixer, volume, audio resume
 │   │   ├── useScreenShare.js   # Meeting Room screen sharing
 │   │   ├── App.css             # Styling
@@ -77,6 +78,7 @@ ProxiSpeak/
 │   ├── lib/rooms.js             # Room membership and presence snapshots
 │   ├── lib/meeting-call.js      # Meeting call membership and signaling rules
 │   ├── lib/meeting-notes.js     # Meeting notes persistence and authorized events
+│   ├── lib/breakout-rooms.js    # Breakout membership, host controls and chat
 │   ├── lib/proximity.js         # Pure-JS proximity oracle
 │   ├── tests/                   # Backend unit tests
 │   └── audit.js                # Spatial audit — correctness + latency benchmark
@@ -114,15 +116,22 @@ ProxiSpeak/
    is shown when browser autoplay policy suspends playback.
 8. Meeting calls. Players in Meeting Room can join an audio/video call. Call
    participants reuse the existing peer connections; camera tracks are
-   shared only with other members of that call. A microphone track already
-   captured for proximity audio is reused rather than captured again. Call
+   shared only with participants in the same main or breakout room. A
+   microphone track already captured for proximity audio is reused rather than
+   captured again. Call
    participants can raise or lower a hand and send 👍, 👏, 😂, ❤️, or 🙌
    reactions. Hand status appears beside participant names, and reactions
    briefly appear for everyone in the Meeting Room.
 9. Meeting notes. Active Meeting Room call participants share a persisted note
-    and action-item list. Notes can be edited; action items have a title,
-    participant assignee, optional due date, and pending/completed status. Note
-    and action changes are broadcast to the call participants in real time.
+   and action-item list. Notes can be edited; action items have a title,
+   participant assignee, optional due date, and pending/completed status. Note
+   and action changes are broadcast to the call participants in real time.
+10. Breakout rooms. The first call participant is the host. The host can create
+    and close rooms, assign call participants, and move them back to the main
+    Meeting Room; assigned participants can join or leave their room. Voice,
+    video, and chat are isolated to the main group or the participant's active
+    breakout room. Breakout state and chat are transient and reset when all call
+    participants leave.
 7. Data Model
 The players collection (MongoDB):
 Field	Type	Notes
@@ -165,6 +174,14 @@ meeting:notes:load	load the persisted note and action items
 meeting:notes:update	{ content }
 meeting:action:create	{ title, assignee, dueDate? }
 meeting:action:update	{ id, completed }
+breakout:load	load breakout state (active call participants)
+breakout:create	{ name } (host only)
+breakout:close	{ roomId } (host only)
+breakout:assign	{ participantId, roomId } (host only)
+breakout:join	{ roomId } (assigned participant)
+breakout:leave	no payload (current participant)
+breakout:move-back	{ participantId } (host only)
+breakout:chat:send	{ text } (current breakout member)
 chat:send	message text (current room)
 world-chat:send	message text (World Chat)
 player:move	{ x, y }
@@ -180,6 +197,8 @@ meeting:participant-joined / meeting:participant-left	participant / socket id
 meeting:hand	{ id, name, raised }
 meeting:reaction	{ id, name, emoji }
 meeting:notes:state	{ content, actionItems, updatedAt }
+breakout:state	{ hostId, participants, rooms }
+breakout:chat:message	breakout-scoped chat message
 player:joined / player:moved / player:left	player / id
 player:renamed	player
 player:avatarPrefs	player

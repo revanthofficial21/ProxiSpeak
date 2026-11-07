@@ -157,9 +157,13 @@ async function main() {
     !container.textContent.includes("Other Room Player")
   );
 
-  act(() => {
+  await act(async () => {
     globalThis.__testSocket.__handlers.get("connect")();
   });
+  check(
+    "socket connect updates the online indicator",
+    container.querySelector(".presence")?.textContent === "Online"
+  );
   const worldChat = container.querySelector(
     '.chat-panel[data-panel="chat"]'
   );
@@ -286,18 +290,6 @@ async function main() {
     ".rooms-panel .room-button"
   );
   await act(async () => meetingRoomJoin.click());
-  act(() => {
-    globalThis.__testSocket.__handlers.get("meeting:hand")({
-      id: "player-two",
-      name: "Second Player",
-      raised: true,
-    });
-  });
-  check(
-    "raised hands appear beside participant names",
-    container.querySelector(".rooms-panel .meeting-hand-indicator")
-      ?.textContent === " ✋"
-  );
 
   act(() => {
     globalThis.__testSocket.__handlers.get("meeting:reaction")({
@@ -337,7 +329,14 @@ async function main() {
   });
   await act(async () => {
     container.querySelector(".meeting-panel-heading button").click();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
+  check(
+    "meeting call starts after joining",
+    container
+      .querySelector(".meeting-panel-heading button")
+      .textContent.includes("Leave call")
+  );
   const notesPanel = container.querySelector(".meeting-notes");
   check(
     "joining the Meeting Room call loads shared notes",
@@ -345,6 +344,18 @@ async function main() {
       globalThis.__testSocket.__emitted.some(
         ({ event }) => event === "meeting:notes:load"
       )
+  );
+  act(() => {
+    globalThis.__testSocket.__handlers.get("meeting:hand")({
+      id: "test-player",
+      name: "Current Player",
+      raised: true,
+    });
+  });
+  check(
+    "raised hand state appears for the local call participant",
+    container.querySelector(".meeting-panel .meeting-video-tile .meeting-hand-indicator")
+      ?.textContent === "✋"
   );
 
   const sharedState = {
@@ -429,6 +440,124 @@ async function main() {
         event === "meeting:action:update" &&
         args[0]?.id === "action-one" &&
         args[0]?.completed === true
+    )
+  );
+
+  const breakoutPanel = container.querySelector(".breakout-panel");
+  check(
+    "meeting host sees breakout room controls",
+    breakoutPanel?.textContent.includes("You are the host") &&
+      breakoutPanel.querySelector("#breakout-room-name")
+  );
+  await act(async () => {
+    setInputValue(
+      breakoutPanel.querySelector("#breakout-room-name"),
+      "Planning"
+    );
+    breakoutPanel.querySelector(".breakout-create-form").dispatchEvent(
+      new window.Event("submit", { bubbles: true, cancelable: true })
+    );
+  });
+  check(
+    "host can create a breakout room",
+    globalThis.__testSocket.__emitted.some(
+      ({ event, args }) =>
+        event === "breakout:create" && args[0]?.name === "Planning"
+    ) && breakoutPanel.textContent.includes("Planning")
+  );
+
+  await act(async () => {
+    const assignRoom = breakoutPanel.querySelector(
+      "#breakout-assign-breakout-1"
+    );
+    setInputValue(assignRoom, "player-two");
+    breakoutPanel.querySelector(".breakout-assign-form button").click();
+  });
+  check(
+    "host can assign a call participant to a breakout room",
+    globalThis.__testSocket.__emitted.some(
+      ({ event, args }) =>
+        event === "breakout:assign" &&
+        args[0]?.participantId === "player-two" &&
+        args[0]?.roomId === "breakout-1"
+    ) && breakoutPanel.textContent.includes("Second Player · assigned")
+  );
+
+  const participantBreakoutState = {
+    hostId: "player-two",
+    participants: [
+      {
+        id: "test-player",
+        name: "Current Player",
+        isHost: false,
+        assignedRoomId: "breakout-1",
+        breakoutRoomId: "breakout-1",
+      },
+      {
+        id: "player-two",
+        name: "Second Player",
+        isHost: true,
+        assignedRoomId: null,
+        breakoutRoomId: null,
+      },
+    ],
+    rooms: [
+      {
+        id: "breakout-1",
+        name: "Planning",
+        participants: [
+          {
+            id: "test-player",
+            name: "Current Player",
+            isHost: false,
+            assignedRoomId: "breakout-1",
+            breakoutRoomId: "breakout-1",
+          },
+        ],
+      },
+    ],
+  };
+  act(() => {
+    globalThis.__testSocket.__setBreakoutState(participantBreakoutState);
+  });
+  check(
+    "assigned participant can join a breakout and gets its separate chat",
+    breakoutPanel.querySelector(".breakout-chat") &&
+      breakoutPanel.textContent.includes("Planning chat")
+  );
+  await act(async () => {
+    globalThis.__testSocket.__handlers.get("breakout:chat:message")({
+      id: "breakout-message",
+      senderName: "Second Player",
+      text: "Room-only update",
+    });
+  });
+  check(
+    "breakout chat displays messages received for the joined room",
+    breakoutPanel.textContent.includes("Room-only update")
+  );
+  await act(async () => {
+    const chatInput = breakoutPanel.querySelector("#breakout-chat-draft");
+    setInputValue(chatInput, "Breakout reply");
+    breakoutPanel.querySelector(".breakout-chat form").dispatchEvent(
+      new window.Event("submit", { bubbles: true, cancelable: true })
+    );
+  });
+  check(
+    "breakout chat sends a message through its dedicated event",
+    globalThis.__testSocket.__emitted.some(
+      ({ event, args }) =>
+        event === "breakout:chat:send" &&
+        args[0]?.text === "Breakout reply"
+    )
+  );
+  await act(async () => {
+    breakoutPanel.querySelector(".breakout-leave-button").click();
+  });
+  check(
+    "participant can leave a breakout room",
+    globalThis.__testSocket.__emitted.some(
+      ({ event }) => event === "breakout:leave"
     )
   );
 

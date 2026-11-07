@@ -24,6 +24,10 @@ const players = new Map([
 ]);
 const proximity = new Map([["a", new Set(["lounge"])]]);
 const callMembers = new Set(["a", "b"]);
+const breakoutMembership = new Map([
+  ["a", "breakout-one"],
+  ["b", "breakout-two"],
+]);
 
 check(
   "only connected players currently in Meeting Room may join a call",
@@ -49,6 +53,37 @@ check(
       players,
       proximity,
       new Set(["a"])
+    )
+);
+
+check(
+  "call signaling is limited to participants in the same breakout room",
+  !canRelayWebRtcSignal(
+    "a",
+    "b",
+    players,
+    proximity,
+    callMembers,
+    breakoutMembership
+  ) &&
+    canRelayWebRtcSignal(
+      "a",
+      "b",
+      players,
+      proximity,
+      callMembers,
+      new Map([
+        ["a", "breakout-one"],
+        ["b", "breakout-one"],
+      ])
+    ) &&
+    !canRelayWebRtcSignal(
+      "a",
+      "lounge",
+      players,
+      proximity,
+      callMembers,
+      new Map([["a", "breakout-one"]])
     )
 );
 

@@ -878,6 +878,160 @@ button:disabled {
   font-size: 12px;
 }
 
+.breakout-panel {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid #263449;
+}
+
+.breakout-heading,
+.breakout-room-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.breakout-panel h2,
+.breakout-panel h3 {
+  margin: 0;
+  color: #6ee7b7;
+}
+
+.breakout-panel h2 {
+  font-size: 16px;
+}
+
+.breakout-panel h3 {
+  font-size: 14px;
+}
+
+.breakout-panel p {
+  color: #8190a6;
+  font-size: 12px;
+}
+
+.breakout-panel form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+}
+
+.breakout-panel label {
+  color: #aab8cb;
+  font-size: 12px;
+}
+
+.breakout-create-form,
+.breakout-assign-form {
+  margin-top: 12px;
+}
+
+.breakout-create-form label,
+.breakout-assign-form label {
+  display: grid;
+  flex: 1 1 160px;
+  gap: 5px;
+}
+
+.breakout-panel input,
+.breakout-panel select {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #35445a;
+  border-radius: 8px;
+  background: #080d17;
+  color: #f8fafc;
+  font: inherit;
+}
+
+.breakout-panel button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.breakout-room-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.breakout-room {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #35445a;
+  border-radius: 10px;
+  background: #080d17;
+}
+
+.breakout-room ul {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.breakout-room li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #cbd5e1;
+  font-size: 12px;
+}
+
+.breakout-room li.breakout-empty {
+  color: #8190a6;
+}
+
+.breakout-panel .breakout-danger-button,
+.breakout-panel .breakout-leave-button {
+  background: #fb7185;
+  color: #3b0710;
+}
+
+.breakout-chat {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid #35445a;
+  border-radius: 10px;
+  background: #080d17;
+}
+
+.breakout-chat-messages {
+  display: grid;
+  max-height: 180px;
+  gap: 5px;
+  overflow: auto;
+  margin: 10px 0;
+}
+
+.breakout-chat-messages > p {
+  margin: 0;
+}
+
+.breakout-chat form input {
+  flex: 1 1 180px;
+}
+
+.breakout-error {
+  color: #fda4af !important;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
 .meeting-notes {
   margin-top: 20px;
   padding-top: 18px;
