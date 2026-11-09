@@ -1,748 +1,413 @@
-import { useEffect, useRef, useState } from "react";
+
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import useVoiceChat from "./useVoiceChat";
 import "./App.css";
 
-const WORLD_WIDTH = 1000;
+const SERVER_URL =
+  import.meta.env.VITE_SERVER_URL || "http://localhost:3000";
+
+const WORLD_WIDTH = 900;
 const WORLD_HEIGHT = 600;
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || "http://localhost:3000";
-const SPEED = 240;
-const AVATAR_RADIUS = 20;
-const DEFAULT_AVATAR_COLOR = "#6ee7b7";
-
-// Furniture and room walls are collision obstacles.
-// The bottom wall has a gap to create the meeting-room entrance.
-const obstacles = [
-  // Work-area desks — smaller dimensions for wider walking paths
-  { x: 100, y: 120, width: 100, height: 45 },
-  { x: 300, y: 120, width: 100, height: 45 },
-  { x: 100, y: 300, width: 100, height: 45 },
-  { x: 300, y: 300, width: 100, height: 45 },
-
-  // Meeting-room walls
-  { x: 580, y: 165, width: 270, height: 12 },
-  { x: 580, y: 165, width: 12, height: 220 },
-  { x: 838, y: 165, width: 12, height: 220 },
-
-  // Bottom wall with doorway
-  { x: 580, y: 373, width: 90, height: 12 },
-  { x: 760, y: 373, width: 90, height: 12 },
-
-  // Meeting-room table
-  { x: 665, y: 225, width: 100, height: 45 },
-];
-
-function drawOfficeFurniture(ctx) {
-  // Work-area desks
-  obstacles.slice(0, 4).forEach((desk) => {
-    ctx.fillStyle = "#475569";
-    ctx.fillRect(desk.x, desk.y, desk.width, desk.height);
-
-    ctx.strokeStyle = "#94a3b8";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(desk.x, desk.y, desk.width, desk.height);
-
-    ctx.fillStyle = "#38bdf8";
-    ctx.fillRect(desk.x + 42, desk.y + 8, 36, 20);
-  });
-
-  // Meeting-room walls
-  ctx.fillStyle = "#64748b";
-  obstacles.slice(4, 9).forEach((wall) => {
-    ctx.fillRect(wall.x, wall.y, wall.width, wall.height);
-  });
-
-  // Meeting-room table
-  const table = obstacles[9];
-
-  ctx.fillStyle = "#854d0e";
-  ctx.fillRect(table.x, table.y, table.width, table.height);
-
-  ctx.strokeStyle = "#fbbf24";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(table.x, table.y, table.width, table.height);
-
-  // Area labels
-  ctx.fillStyle = "#cbd5e1";
-  ctx.font = "16px Arial";
-  ctx.textAlign = "left";
-  ctx.fillText("WORK AREA", 100, 85);
-  ctx.fillText("MEETING ROOM", 610, 145);
-
-  // Doorway label
-  ctx.font = "12px Arial";
-  ctx.fillStyle = "#2dd4bf";
-  ctx.fillText("ENTRANCE", 680, 405);
-}
-
-function hitsObstacle(x, y) {
-  return obstacles.some((obstacle) => {
-    const closestX = Math.max(
-      obstacle.x,
-      Math.min(x, obstacle.x + obstacle.width)
-    );
-
-    const closestY = Math.max(
-      obstacle.y,
-      Math.min(y, obstacle.y + obstacle.height)
-    );
-
-    const distanceX = x - closestX;
-    const distanceY = y - closestY;
-
-    return (
-      distanceX * distanceX + distanceY * distanceY <
-      AVATAR_RADIUS * AVATAR_RADIUS
-    );
-  });
-}
+const PLAYER_SPEED = 15;
 
 export default function App() {
   const canvasRef = useRef(null);
-  const canvasWrapRef = useRef(null);
-  const socketRef = useRef(null);
-  const keysRef = useRef({});
-  const gameFocusedRef = useRef(false);
-  const playersRef = useRef(new Map());
-  const nearbyRef = useRef(new Set());
+  const positionRef = useRef({ x: 450, y: 300 });
 
-  const [connected, setConnected] = useState(false);
-  const [socket, setSocket] = useState(null);
+  const [position, setPosition] = useState({ x: 450, y: 300 });
   const [players, setPlayers] = useState([]);
-  const [nearbyPlayers, setNearbyPlayers] = useState([]);
-  const [playerName, setPlayerName] = useState("");
-  const [avatarColor, setAvatarColor] = useState(DEFAULT_AVATAR_COLOR);
-  const [savedName, setSavedName] = useState("");
-  const [nameError, setNameError] = useState("");
+  const [playerName, setPlayerName] = useState(
+    () => localStorage.getItem("proxispeak-name") || ""
+  );
+  const [nameInput, setNameInput] = useState(
+    () => localStorage.getItem("proxispeak-name") || ""
+  );
+  const [joined, setJoined] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState("Connecting...");
 
-  const {
-    voiceEnabled,
-    voiceStatus,
-    peerStates,
-    muted,
-    speakerVolume,
-    audioOutputBlocked,
-    enableVoice,
-    disableVoice,
-    toggleMute,
-    changeSpeakerVolume,
-    resumeAudio,
-  } = useVoiceChat(socket, nearbyPlayers, playersRef);
+  const socket = useMemo(
+    () =>
+      io(SERVER_URL, {
+        transports: ["websocket", "polling"],
+        autoConnect: false,
+      }),
+    []
+  );
 
-  // Socket connection and multiplayer events
+  const voice = useVoiceChat(socket, position);
+
+  const micEnabled =
+    voice.micEnabled ?? voice.isMicOn ?? voice.enabled ?? false;
+
+  const toggleMic =
+    voice.toggleMic || voice.enableMic || voice.startVoice;
+
+  const voiceError = voice.error || voice.voiceError || "";
+
   useEffect(() => {
-    const client = io(SERVER_URL);
+    socket.connect();
 
-    socketRef.current = client;
-    setSocket(client);
-
-    client.on("connect", () => setConnected(true));
-
-    client.on("disconnect", () => {
-      setConnected(false);
-      playersRef.current.clear();
-      nearbyRef.current.clear();
-      setPlayers([]);
-      setNearbyPlayers([]);
+    socket.on("connect", () => {
+      setConnectionStatus("Connected");
     });
 
-    client.on("world:state", (list) => {
-      if (!Array.isArray(list)) return;
-
-      playersRef.current = new Map(
-        list
-          .filter((player) => player && typeof player.id === "string")
-          .map((player) => [player.id, player])
-      );
-
-      setPlayers(Array.from(playersRef.current.values()));
+    socket.on("disconnect", () => {
+      setConnectionStatus("Disconnected");
     });
 
-    client.on("player:joined", (player) => {
-      if (!player || typeof player.id !== "string") return;
-
-      playersRef.current.set(player.id, player);
-      setPlayers(Array.from(playersRef.current.values()));
+    socket.on("connect_error", () => {
+      setConnectionStatus("Connection failed");
     });
 
-    client.on("player:moved", (player) => {
-      if (
-        !player ||
-        typeof player.id !== "string" ||
-        player.id === client.id
-      ) {
-        return;
-      }
+    socket.on("world:state", (data) => {
+      const list = Array.isArray(data)
+        ? data
+        : data?.players || [];
 
-      playersRef.current.set(player.id, player);
+      setPlayers(list);
     });
 
-    client.on("player:renamed", (player) => {
-      if (!player || typeof player.id !== "string") return;
+    socket.on("player:joined", (player) => {
+      setPlayers((current) => {
+        const exists = current.some(
+          (item) => item.socketId === player.socketId
+        );
 
-      const existing = playersRef.current.get(player.id);
+        if (exists) {
+          return current.map((item) =>
+            item.socketId === player.socketId ? player : item
+          );
+        }
 
-      if (player.id === client.id && existing) {
-        playersRef.current.set(player.id, {
-          ...existing,
-          name: player.name,
-        });
-      } else {
-        playersRef.current.set(player.id, player);
-      }
-
-      setPlayers(Array.from(playersRef.current.values()));
+        return [...current, player];
+      });
     });
 
-    client.on("player:avatarColorUpdated", (player) => {
-      if (!player || typeof player.id !== "string") return;
-
-      const existing = playersRef.current.get(player.id);
-
-      playersRef.current.set(
-        player.id,
-        existing
-          ? { ...existing, avatarColor: player.avatarColor }
-          : player
-      );
-
-      setPlayers(Array.from(playersRef.current.values()));
-
-      if (player.id === client.id) {
-        setAvatarColor(player.avatarColor || DEFAULT_AVATAR_COLOR);
-      }
-    });
-
-    client.on("player:nearby", (list) => {
-      const safeList = Array.isArray(list)
-        ? list.filter(
-            (player) =>
-              player &&
-              typeof player.id === "string" &&
-              Number.isFinite(player.x) &&
-              Number.isFinite(player.y)
-          )
-        : [];
-
-      nearbyRef.current = new Set(safeList.map((player) => player.id));
-      setNearbyPlayers(safeList);
-    });
-
-    client.on("proximity:enter", (peer) => {
-      if (!peer || typeof peer.id !== "string") return;
-
-      nearbyRef.current.add(peer.id);
-
-      setNearbyPlayers((current) =>
-        current.some((player) => player.id === peer.id)
-          ? current
-          : [...current, peer]
+    socket.on("player:moved", (player) => {
+      setPlayers((current) =>
+        current.map((item) =>
+          item.socketId === player.socketId
+            ? { ...item, ...player }
+            : item
+        )
       );
     });
 
-    client.on("proximity:leave", (peerId) => {
-      if (typeof peerId !== "string") return;
+    socket.on("player:left", (data) => {
+      const socketId =
+        typeof data === "string" ? data : data?.socketId;
 
-      nearbyRef.current.delete(peerId);
-
-      setNearbyPlayers((current) =>
-        current.filter((player) => player.id !== peerId)
-      );
-    });
-
-    client.on("player:left", (playerId) => {
-      if (typeof playerId !== "string") return;
-
-      playersRef.current.delete(playerId);
-      nearbyRef.current.delete(playerId);
-
-      setPlayers(Array.from(playersRef.current.values()));
-
-      setNearbyPlayers((current) =>
-        current.filter((player) => player.id !== playerId)
+      setPlayers((current) =>
+        current.filter((item) => item.socketId !== socketId)
       );
     });
 
     return () => {
-      client.disconnect();
-      socketRef.current = null;
+      socket.removeAllListeners();
+      socket.disconnect();
     };
-  }, []);
+  }, [socket]);
 
-  // Canvas rendering and player movement
+  useEffect(() => {
+    window.__proxyspeakPlayers = players;
+  }, [players]);
+
+  useEffect(() => {
+    positionRef.current = position;
+  }, [position]);
+
+  useEffect(() => {
+    if (!joined || !socket.connected) return;
+
+    socket.emit("player:move", {
+      x: position.x,
+      y: position.y,
+    });
+  }, [position, joined, socket]);
+
   useEffect(() => {
     const canvas = canvasRef.current;
-    const canvasWrap = canvasWrapRef.current;
-    const ctx = canvas?.getContext("2d");
+    if (!canvas) return;
 
-    if (!canvas || !canvasWrap || !ctx) return undefined;
+    const context = canvas.getContext("2d");
 
-    let animationId;
-    let lastSent = 0;
-    let previousFrame = performance.now();
+    const draw = () => {
+      context.clearRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+
+      // Office background
+      context.fillStyle = "#f4f1e9";
+      context.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+
+      // Floor grid
+      context.strokeStyle = "#e5e0d5";
+      context.lineWidth = 1;
+
+      for (let x = 0; x <= WORLD_WIDTH; x += 40) {
+        context.beginPath();
+        context.moveTo(x, 0);
+        context.lineTo(x, WORLD_HEIGHT);
+        context.stroke();
+      }
+
+      for (let y = 0; y <= WORLD_HEIGHT; y += 40) {
+        context.beginPath();
+        context.moveTo(0, y);
+        context.lineTo(WORLD_WIDTH, y);
+        context.stroke();
+      }
+
+      // Office furniture
+      const desks = [
+        { x: 120, y: 100 },
+        { x: 320, y: 100 },
+        { x: 520, y: 100 },
+        { x: 720, y: 100 },
+        { x: 120, y: 430 },
+        { x: 320, y: 430 },
+        { x: 520, y: 430 },
+        { x: 720, y: 430 },
+      ];
+
+      desks.forEach((desk) => {
+        context.fillStyle = "#c8b69b";
+        context.fillRect(desk.x, desk.y, 90, 45);
+
+        context.fillStyle = "#8b7355";
+        context.fillRect(desk.x + 8, desk.y + 8, 74, 29);
+      });
+
+      // Other players
+      players.forEach((player) => {
+        if (
+          !player ||
+          player.socketId === socket.id ||
+          typeof player.x !== "number" ||
+          typeof player.y !== "number"
+        ) {
+          return;
+        }
+
+        context.beginPath();
+        context.arc(player.x, player.y, 13, 0, Math.PI * 2);
+        context.fillStyle = "#3b82f6";
+        context.fill();
+
+        context.fillStyle = "#ffffff";
+        context.font = "bold 10px Arial";
+        context.textAlign = "center";
+        context.fillText(
+          (player.name || "Player").slice(0, 10),
+          player.x,
+          player.y + 4
+        );
+
+        context.fillStyle = "#263238";
+        context.font = "12px Arial";
+        context.fillText(
+          player.name || "Player",
+          player.x,
+          player.y - 21
+        );
+      });
+
+      // Current player
+      context.beginPath();
+      context.arc(position.x, position.y, 15, 0, Math.PI * 2);
+      context.fillStyle = "#16a34a";
+      context.fill();
+
+      context.strokeStyle = "#ffffff";
+      context.lineWidth = 3;
+      context.stroke();
+
+      context.fillStyle = "#263238";
+      context.font = "bold 12px Arial";
+      context.textAlign = "center";
+      context.fillText(playerName || "You", position.x, position.y - 24);
+    };
+
+    draw();
+  }, [players, position, playerName, socket.id]);
+
+  useEffect(() => {
+    if (!joined) return;
 
     const handleKeyDown = (event) => {
       const key = event.key.toLowerCase();
 
-      if (!gameFocusedRef.current) return;
+      const movementKeys = [
+        "arrowup",
+        "arrowdown",
+        "arrowleft",
+        "arrowright",
+        "w",
+        "a",
+        "s",
+        "d",
+      ];
 
-      if (
-        ![
-          "arrowup",
-          "arrowdown",
-          "arrowleft",
-          "arrowright",
-          "w",
-          "a",
-          "s",
-          "d",
-        ].includes(key)
-      ) {
-        return;
-      }
+      if (!movementKeys.includes(key)) return;
 
-      if (key.startsWith("arrow")) event.preventDefault();
+      event.preventDefault();
 
-      keysRef.current[key] = true;
+      const current = positionRef.current;
+      let x = current.x;
+      let y = current.y;
+
+      if (key === "arrowup" || key === "w") y -= PLAYER_SPEED;
+      if (key === "arrowdown" || key === "s") y += PLAYER_SPEED;
+      if (key === "arrowleft" || key === "a") x -= PLAYER_SPEED;
+      if (key === "arrowright" || key === "d") x += PLAYER_SPEED;
+
+      const next = {
+        x: Math.max(20, Math.min(WORLD_WIDTH - 20, x)),
+        y: Math.max(20, Math.min(WORLD_HEIGHT - 20, y)),
+      };
+
+      positionRef.current = next;
+      setPosition(next);
     };
 
-    const clearKeys = () => {
-      keysRef.current = {};
-    };
-
-    const handleKeyUp = (event) => {
-      keysRef.current[event.key.toLowerCase()] = false;
-    };
-
-    const handleFocus = () => {
-      gameFocusedRef.current = true;
-    };
-
-    const handleBlur = () => {
-      gameFocusedRef.current = false;
-      clearKeys();
-    };
-
-    window.addEventListener("keydown", handleKeyDown, true);
-    window.addEventListener("keyup", handleKeyUp, true);
-    window.addEventListener("blur", clearKeys);
-
-    canvasWrap.addEventListener("focus", handleFocus);
-    canvasWrap.addEventListener("blur", handleBlur);
-
-    function draw(timestamp) {
-      const client = socketRef.current;
-      const current = client
-        ? playersRef.current.get(client.id)
-        : null;
-
-      const keys = keysRef.current;
-
-      const deltaTime = Math.min(
-        (timestamp - previousFrame) / 1000,
-        0.05
-      );
-
-      previousFrame = timestamp;
-
-      if (current && client?.connected) {
-        let dx = 0;
-        let dy = 0;
-
-        if (keys.arrowleft || keys.a) dx -= 1;
-        if (keys.arrowright || keys.d) dx += 1;
-        if (keys.arrowup || keys.w) dy -= 1;
-        if (keys.arrowdown || keys.s) dy += 1;
-
-        if (dx !== 0 || dy !== 0) {
-          const length = Math.hypot(dx, dy);
-          const distance = SPEED * deltaTime;
-
-          const stepX = (dx / length) * distance;
-          const stepY = (dy / length) * distance;
-
-          const nextX = Math.max(
-            AVATAR_RADIUS,
-            Math.min(
-              WORLD_WIDTH - AVATAR_RADIUS,
-              current.x + stepX
-            )
-          );
-
-          const nextY = Math.max(
-            AVATAR_RADIUS,
-            Math.min(
-              WORLD_HEIGHT - AVATAR_RADIUS,
-              current.y + stepY
-            )
-          );
-
-          if (!hitsObstacle(nextX, current.y)) {
-            current.x = nextX;
-          }
-
-          if (!hitsObstacle(current.x, nextY)) {
-            current.y = nextY;
-          }
-
-          if (timestamp - lastSent > 40) {
-            client.emit("player:move", {
-              x: current.x,
-              y: current.y,
-            });
-
-            lastSent = timestamp;
-          }
-        }
-      }
-
-      // Draw world background
-      ctx.clearRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-
-      ctx.fillStyle = "#101827";
-      ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-
-      // Draw grid
-      ctx.strokeStyle = "#263449";
-      ctx.lineWidth = 1;
-
-      for (let x = 0; x <= WORLD_WIDTH; x += 40) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, WORLD_HEIGHT);
-        ctx.stroke();
-      }
-
-      for (let y = 0; y <= WORLD_HEIGHT; y += 40) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(WORLD_WIDTH, y);
-        ctx.stroke();
-      }
-
-      drawOfficeFurniture(ctx);
-
-      // Draw players
-      for (const player of playersRef.current.values()) {
-        const isMe = player.id === client?.id;
-
-        if (
-          !Number.isFinite(player.x) ||
-          !Number.isFinite(player.y)
-        ) {
-          continue;
-        }
-
-        if (!isMe && nearbyRef.current.has(player.id)) {
-          ctx.beginPath();
-          ctx.arc(player.x, player.y, 34, 0, Math.PI * 2);
-          ctx.strokeStyle = "#fbbf24";
-          ctx.lineWidth = 3;
-          ctx.stroke();
-          ctx.lineWidth = 1;
-        }
-
-        ctx.beginPath();
-        ctx.arc(
-          player.x,
-          player.y,
-          AVATAR_RADIUS,
-          0,
-          Math.PI * 2
-        );
-
-        const playerColor =
-          player.avatarColor || DEFAULT_AVATAR_COLOR;
-
-        ctx.fillStyle = playerColor;
-        ctx.fill();
-
-        ctx.beginPath();
-        ctx.arc(player.x, player.y, 27, 0, Math.PI * 2);
-        ctx.strokeStyle = playerColor;
-        ctx.globalAlpha = 0.5;
-        ctx.stroke();
-        ctx.globalAlpha = 1;
-
-        ctx.fillStyle = "#f8fafc";
-        ctx.font = "13px Arial";
-        ctx.textAlign = "center";
-
-        ctx.fillText(
-          isMe
-            ? "You"
-            : player.name || `Player ${player.id.slice(0, 4)}`,
-          player.x,
-          player.y - 34
-        );
-      }
-
-      animationId = requestAnimationFrame(draw);
-    }
-
-    draw(performance.now());
+    window.addEventListener("keydown", handleKeyDown);
 
     return () => {
-      cancelAnimationFrame(animationId);
-
-      window.removeEventListener("keydown", handleKeyDown, true);
-      window.removeEventListener("keyup", handleKeyUp, true);
-      window.removeEventListener("blur", clearKeys);
-
-      canvasWrap.removeEventListener("focus", handleFocus);
-      canvasWrap.removeEventListener("blur", handleBlur);
+      window.removeEventListener("keydown", handleKeyDown);
     };
-  }, []);
+  }, [joined]);
 
-  const handleSetName = (event) => {
+  const joinOffice = (event) => {
     event.preventDefault();
 
-    const name = playerName.trim();
+    const name = nameInput.trim();
+    if (!name || !socket.connected) return;
 
-    if (!name) {
-      setNameError("Enter a player name.");
-      return;
-    }
+    localStorage.setItem("proxispeak-name", name);
 
-    const client = socketRef.current;
+    setPlayerName(name);
+    setJoined(true);
 
-    if (!client?.connected) {
-      setNameError("Connect to the server before setting your name.");
-      return;
-    }
-
-    client.emit("player:setName", name, (response) => {
-      if (!response?.ok) {
-        setNameError(response?.message || "Could not save your name.");
-        return;
-      }
-      setSavedName(response.player?.name || name);
-      setNameError("");
+    socket.emit("player:join", {
+      name,
+      x: position.x,
+      y: position.y,
+      officeId: "main-office",
     });
   };
 
-  const handleSetAvatarColor = (event) => {
-    const color = event.target.value;
-
-    setAvatarColor(color);
-
-    const client = socketRef.current;
-
-    if (!client?.connected) return;
-    
-    client.emit("player:setAvatarColor", color, (response) => {
-      if (!response?.ok) {
-        setNameError(
-          response?.message || "Could not save your avatar colour."
-        );
-      } else {
-        setNameError("");
-      }
-    });
+  const handleMic = async () => {
+    if (typeof toggleMic === "function") {
+      await toggleMic();
+    } else {
+      alert("The microphone control is not available in the voice hook.");
+    }
   };
 
   return (
-    <main className="app">
-      <header className="topbar">
-        <div className="brand">
-          <div className="brand-icon">P</div>
-
-          <div>
-            <h1>ProxiSpeak</h1>
-            <p>Spatial collaboration, reimagined</p>
-          </div>
+    <main className="app-container">
+      <header className="app-header">
+        <div>
+          <h1>ProxiSpeak</h1>
+          <p>Geospatial Proximity Audio Ecosystem</p>
         </div>
 
-        <div className={`connection ${connected ? "online" : "offline"}`}>
-          <span className="status-dot" />
-          {connected ? "Server connected" : "Connecting to server…"}
+        <div className="connection-status">
+          <span
+            className={
+              connectionStatus === "Connected"
+                ? "status-dot online"
+                : "status-dot offline"
+            }
+          />
+          {connectionStatus}
         </div>
       </header>
 
-      <section className="intro">
-        <div>
-          <p className="eyebrow">YOUR SHARED SPACE</p>
-          <h2>Meet in the same world.</h2>
+      {!joined ? (
+        <section className="join-panel">
+          <h2>Welcome to ProxiSpeak</h2>
+          <p>Enter your name to join the virtual office.</p>
 
-          <p className="description">
-            Move around the canvas and see other connected players in real time.
-          </p>
-        </div>
-
-        <div className="player-count">
-          <span className="count-number">{players.length}</span>
-          <span className="count-label">
-            Connected player{players.length === 1 ? "" : "s"}
-          </span>
-        </div>
-      </section>
-
-      <section className="name-panel">
-        <form className="player-name-form" onSubmit={handleSetName}>
-          <label htmlFor="player-name">
-            {savedName
-              ? `You are "${savedName}"`
-              : "Set your display name"}
-          </label>
-
-          <input
-            id="player-name"
-            type="text"
-            value={playerName}
-            placeholder="Enter your name"
-            maxLength={30}
-            onChange={(event) => setPlayerName(event.target.value)}
-          />
-
-          <label htmlFor="avatar-color" className="avatar-color-label">
-            <span
-              className="avatar-color-swatch"
-              style={{ backgroundColor: avatarColor }}
-              aria-hidden="true"
-            />
-
-            Avatar colour
-
+          <form onSubmit={joinOffice}>
             <input
-              id="avatar-color"
-              type="color"
-              value={avatarColor}
-              disabled={!connected}
-              onChange={handleSetAvatarColor}
-              aria-label="Choose avatar colour"
+              type="text"
+              value={nameInput}
+              onChange={(event) => setNameInput(event.target.value)}
+              placeholder="Enter your name"
+              maxLength={25}
+              required
             />
-          </label>
 
-          <button type="submit" disabled={!connected}>
-            Save name
-          </button>
-        </form>
+            <button
+              type="submit"
+              disabled={!socket.connected || !nameInput.trim()}
+            >
+              Join Office
+            </button>
+          </form>
+        </section>
+      ) : (
+        <>
+          <section className="dashboard">
+            <div>
+              <span className="info-label">Your name</span>
+              <strong>{playerName}</strong>
+            </div>
 
-        {nameError && <p className="form-error">{nameError}</p>}
-      </section>
+            <div>
+              <span className="info-label">Players connected</span>
+              <strong>{players.length + 1}</strong>
+            </div>
 
-      <section className="world-card">
-        <div className="world-toolbar">
-          <div>
-            <span className="live-dot" />
-            <strong>Open World</strong>
-            <span className="world-subtitle"> · 2D proximity space</span>
-          </div>
+            <div>
+              <span className="info-label">Your position</span>
+              <strong>
+                {Math.round(position.x)}, {Math.round(position.y)}
+              </strong>
+            </div>
+          </section>
 
-          <span className="coordinate-label">1000 × 600</span>
-        </div>
+          <section className="office-section">
+            <div className="office-heading">
+              <h2>Virtual Office</h2>
+              <span>Use W A S D or arrow keys to move</span>
+            </div>
 
-        <div
-          ref={canvasWrapRef}
-          className="canvas-wrap"
-          tabIndex={0}
-          aria-label="Game world. Click here, then use WASD or arrow keys to move."
-          onClick={() => canvasWrapRef.current?.focus()}
-        >
-          <canvas
-            ref={canvasRef}
-            width={WORLD_WIDTH}
-            height={WORLD_HEIGHT}
-            className="world-canvas"
-          />
-        </div>
+            <div className="canvas-wrapper">
+              <canvas
+                ref={canvasRef}
+                width={WORLD_WIDTH}
+                height={WORLD_HEIGHT}
+              />
+            </div>
+          </section>
 
-        <div className="world-footer">
-          <div className="controls">
-            <span className="key">W</span>
-            <span className="key">A</span>
-            <span className="key">S</span>
-            <span className="key">D</span>
-            <span className="controls-label">
-              or arrow keys to move
-            </span>
-          </div>
+          <section className="voice-panel">
+            <div>
+              <h3>Proximity Voice Chat</h3>
+              <p>
+                Voice communication is intended for nearby players.
+              </p>
+            </div>
 
-          <span className="footer-note">
-            Multiplayer movement prototype
-          </span>
-        </div>
-      </section>
+            <button
+              className={micEnabled ? "mic-button active" : "mic-button"}
+              onClick={handleMic}
+              type="button"
+            >
+              {micEnabled ? "Turn Microphone Off" : "Turn Microphone On"}
+            </button>
 
-      <section className="nearby-panel">
-        <strong>
-          Nearby players (within 100px): {nearbyPlayers.length}
-        </strong>
+            {voiceError && (
+              <p className="voice-error">{String(voiceError)}</p>
+            )}
+          </section>
+        </>
+      )}
 
-        {nearbyPlayers.length === 0 ? (
-          <p>No one nearby yet — move closer to another avatar.</p>
-        ) : (
-          <ul>
-            {nearbyPlayers.map((player) => (
-              <li key={player.id}>
-                {player.name || `Player ${player.id.slice(0, 4)}`} — X:{" "}
-                {Math.round(player.x)}, Y: {Math.round(player.y)}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="audio-panel">
-        <strong>Proximity Voice Chat</strong>
-        <p>{voiceStatus}</p>
-
-        <button
-          type="button"
-          disabled={!connected}
-          onClick={voiceEnabled ? disableVoice : enableVoice}
-        >
-          {voiceEnabled ? "Disable Microphone" : "Enable Microphone"}
-        </button>
-
-        {voiceEnabled && (
-          <button type="button" onClick={toggleMute}>
-            {muted ? "Unmute" : "Mute"}
-          </button>
-        )}
-
-        {audioOutputBlocked && (
-          <button
-            type="button"
-            className="resume-audio"
-            onClick={resumeAudio}
-          >
-            Resume audio
-          </button>
-        )}
-
-        <label htmlFor="speaker-volume" className="speaker-volume">
-          Speaker volume
-
-          <input
-            id="speaker-volume"
-            type="range"
-            min="0"
-            max="100"
-            value={speakerVolume}
-            onChange={(event) =>
-              changeSpeakerVolume(event.target.value)
-            }
-          />
-
-          <span>{speakerVolume}%</span>
-        </label>
-
-        <p>
-          Enable your microphone and move within 100 pixels of another player
-          to connect.
-        </p>
-
-        {Object.keys(peerStates).length > 0 && (
-          <ul>
-            {Object.entries(peerStates).map(([playerId, state]) => (
-              <li key={playerId}>
-                {`Player ${playerId.slice(0, 4)}`} — {state}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      <footer className="app-footer">
+        ProxiSpeak — Real-time virtual collaboration
+      </footer>
     </main>
   );
 }
