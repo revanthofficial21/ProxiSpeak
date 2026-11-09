@@ -1,25 +1,70 @@
-const { getPlayersCollection } = require("./db");
+const { getDB } = require("./db");
 
-const PROXIMITY_DISTANCE = 100;
+const PROXIMITY_DISTANCE = Number(
+  process.env.PROXIMITY_DISTANCE || 100
+);
 
-function calculateDistance(x1, y1, x2, y2) {
-    return Math.sqrt(
-        Math.pow(x2 - x1, 2) +
-        Math.pow(y2 - y1, 2)
-    );
+const COLLECTION_NAME = "players";
+
+let indexPromise = null;
+
+function getPlayersCollection() {
+  const database = getDB();
+
+  if (!database) {
+    throw new Error("MongoDB database is not connected.");
+  }
+
+  return database.collection(COLLECTION_NAME);
+}
+
+async function ensureIndexes() {
+  if (!indexPromise) {
+    indexPromise = (async () => {
+      const collection = getPlayersCollection();
+
+      await collection.createIndex({ location: "2d" });
+      await collection.createIndex({ socketId: 1 }, { unique: true });
+      await collection.createIndex({ officeId: 1 });
+
+    })().catch(error => {
+      indexPromise = null;
+      throw error;
+    });
+  }
+
+  return indexPromise;
+}
+
+function validPlayer(player) {
+  return (
+    player &&
+    typeof player.socketId === "string" &&
+    Number.isFinite(Number(player.x)) &&
+    Number.isFinite(Number(player.y)) &&
+    Number(player.x) >= 0 &&
+    Number(player.y) >= 0 &&
+    Number(player.x) <= 2000 &&
+    Number(player.y) <= 2000
+  );
 }
 
 async function savePlayer(player) {
-    const players = getPlayersCollection();
+  if (!validPlayer(player)) {
+    throw new Error("Invalid player data.");
+  }
 
-    const x = Number(player.x);
-    const y = Number(player.y);
+  await ensureIndexes();
 
-    if (!player.socketId || !Number.isFinite(x) || !Number.isFinite(y)) {
-        throw new Error("Invalid player information.");
-    }
+  const collection = getPlayersCollection();
 
-    const document = {
+  const x = Number(player.x);
+  const y = Number(player.y);
+
+  await collection.updateOne(
+    { socketId: player.socketId },
+    {
+      $set: {
         socketId: player.socketId,
         name: player.name || "Anonymous",
         x,
@@ -27,77 +72,101 @@ async function savePlayer(player) {
         location: [x, y],
         officeId: player.officeId || "main-office",
         updatedAt: new Date()
-    };
-
-    await players.updateOne(
-        { socketId: player.socketId },
-        { $set: document },
-        { upsert: true }
-    );
-
-    return document;
+      }
+    },
+    { upsert: true }
+  );
 }
 
 async function removePlayer(socketId) {
-    return getPlayersCollection().deleteOne({ socketId });
+  if (!socketId) return;
+
+  await ensureIndexes();
+
+  await getPlayersCollection().deleteOne({
+    socketId
+  });
+}
+
+async function findNearbyPlayers(
+  x,
+  y,
+  excludeSocketId,
+  officeId = "main-office"
+) {
+  const px = Number(x);
+  const py = Number(y);
+
+  if (
+    !Number.isFinite(px) ||
+    !Number.isFinite(py)
+  ) {
+    return [];
+  }
+
+  await ensureIndexes();
+
+  const collection = getPlayersCollection();
+
+  const query = {
+    location: {
+      $near: [px, py],
+      $maxDistance: PROXIMITY_DISTANCE
+    },
+    officeId
+  };
+
+  if (excludeSocketId) {
+    query.socketId = { $ne: excludeSocketId };
+  }
+
+  const players = await collection
+    .find(query)
+    .project({
+      _id: 0,
+      socketId: 1,
+      name: 1,
+      x: 1,
+      y: 1,
+      officeId: 1
+    })
+    .toArray();
+
+  return players;
 }
 
 async function getPlayer(socketId) {
-    return getPlayersCollection().findOne({ socketId });
+  await ensureIndexes();
+
+  return getPlayersCollection().findOne(
+    { socketId },
+    { projection: { _id: 0 } }
+  );
 }
 
-async function findNearbyPlayers(x, y, excludeSocketId, officeId = "main-office") {
-    const players = getPlayersCollection();
+async function arePlayersNearby(firstSocketId, secondSocketId) {
+  const [first, second] = await Promise.all([
+    getPlayer(firstSocketId),
+    getPlayer(secondSocketId)
+  ]);
 
-    x = Number(x);
-    y = Number(y);
+  if (!first || !second) return false;
 
-    if (!Number.isFinite(x) || !Number.isFinite(y)) {
-        throw new Error("Invalid coordinates.");
-    }
+  if (first.officeId !== second.officeId) return false;
 
-    const nearby = await players.find({
-        socketId: { $ne: excludeSocketId },
-        officeId,
-        location: {
-            $near: [x, y],
-            $maxDistance: PROXIMITY_DISTANCE
-        }
-    }).toArray();
+  const distance = Math.hypot(
+    first.x - second.x,
+    first.y - second.y
+  );
 
-    return nearby.filter(player =>
-        calculateDistance(x, y, player.x, player.y) <= PROXIMITY_DISTANCE
-    );
-}
-
-async function arePlayersNearby(socketId1, socketId2) {
-    const [player1, player2] = await Promise.all([
-        getPlayer(socketId1),
-        getPlayer(socketId2)
-    ]);
-
-    if (!player1 || !player2) {
-        return false;
-    }
-
-    if (player1.officeId !== player2.officeId) {
-        return false;
-    }
-
-    return calculateDistance(
-        player1.x,
-        player1.y,
-        player2.x,
-        player2.y
-    ) <= PROXIMITY_DISTANCE;
+  return distance <= PROXIMITY_DISTANCE;
 }
 
 module.exports = {
-    PROXIMITY_DISTANCE,
-    calculateDistance,
-    savePlayer,
-    removePlayer,
-    getPlayer,
-    findNearbyPlayers,
-    arePlayersNearby
+  PROXIMITY_DISTANCE,
+  savePlayer,
+  removePlayer,
+  findNearbyPlayers,
+  getPlayer,
+  arePlayersNearby
 };
