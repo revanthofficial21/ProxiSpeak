@@ -1,88 +1,91 @@
+
+require("dotenv").config();
+
 const { MongoClient } = require("mongodb");
 
-let client;
-let database;
+const MONGODB_URI = process.env.MONGODB_URI;
+const DB_NAME = process.env.DB_NAME || "proxyspeak";
+
+let client = null;
+let database = null;
+let connectionPromise = null;
 
 async function connectDB() {
-    if (database) {
-        return database;
-    }
-
-    const uri = process.env.MONGODB_URI;
-    const dbName = process.env.DB_NAME || "proxyspeak";
-
-    if (!uri) {
-        throw new Error("MONGODB_URI is missing in server/.env");
-    }
-
-    client = new MongoClient(uri);
-
-    await client.connect();
-
-    database = client.db(dbName);
-
-    console.log("MongoDB connected successfully!");
-
-    await createIndexes();
-
+  if (database) {
     return database;
-}
+  }
 
-async function createIndexes() {
-    const players = database.collection("players");
-    const offices = database.collection("offices");
-
-    await players.createIndex(
-        { location: "2d" },
-        { name: "player_location_2d" }
+  if (!MONGODB_URI) {
+    throw new Error(
+      "MONGODB_URI is missing from server/.env"
     );
+  }
 
-    await players.createIndex(
-        { socketId: 1 },
-        { unique: true, name: "player_socket_unique" }
-    );
+  if (connectionPromise) {
+    return connectionPromise;
+  }
 
-    await players.createIndex(
-        { updatedAt: 1 },
-        { expireAfterSeconds: 86400, name: "player_expiry" }
-    );
+  connectionPromise = (async () => {
+    const newClient = new MongoClient(MONGODB_URI, {
+      serverSelectionTimeoutMS: 10000,
+      connectTimeoutMS: 10000,
+      maxPoolSize: 50,
+      minPoolSize: 0
+    });
 
-    await offices.createIndex(
-        { officeId: 1 },
-        { unique: true, name: "office_id_unique" }
-    );
+    try {
+      await newClient.connect();
 
-    console.log("MongoDB indexes created successfully.");
+      const newDatabase = newClient.db(DB_NAME);
+
+      await newDatabase.command({ ping: 1 });
+
+      client = newClient;
+      database = newDatabase;
+
+      console.log(`Connected to MongoDB database: ${DB_NAME}`);
+
+      return database;
+    } catch (error) {
+      await newClient.close().catch(() => {});
+
+      client = null;
+      database = null;
+
+      throw error;
+    } finally {
+      connectionPromise = null;
+    }
+  })();
+
+  return connectionPromise;
 }
 
 function getDB() {
-    if (!database) {
-        throw new Error("Database is not connected.");
-    }
+  if (!database) {
+    throw new Error("MongoDB is not connected.");
+  }
 
-    return database;
-}
-
-function getPlayersCollection() {
-    return getDB().collection("players");
-}
-
-function getOfficesCollection() {
-    return getDB().collection("offices");
+  return database;
 }
 
 async function closeDB() {
-    if (client) {
-        await client.close();
-        client = null;
-        database = null;
-    }
+  if (connectionPromise) {
+    await connectionPromise.catch(() => {});
+  }
+
+  if (client) {
+    await client.close();
+
+    client = null;
+    database = null;
+
+    console.log("MongoDB connection closed.");
+  }
 }
 
 module.exports = {
-    connectDB,
-    getDB,
-    getPlayersCollection,
-    getOfficesCollection,
-    closeDB
+  connectDB,
+  getDB,
+  closeDB
 };
