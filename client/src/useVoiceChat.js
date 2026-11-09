@@ -1,554 +1,493 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const ICE_SERVERS = {
-  iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+const PROXIMITY_DISTANCE = 100;
+
+const RTC_CONFIGURATION = {
+    iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" }
+    ]
 };
 
-const AUDIO_RANGE = 100;
+export default function useVoiceChat(socket, playerPosition) {
+    const [isMicEnabled, setIsMicEnabled] = useState(false);
+    const [connectedPeers, setConnectedPeers] = useState([]);
+    const [voiceError, setVoiceError] = useState("");
 
-export default function useVoiceChat(socket, nearbyPlayers, playersRef) {
-  const [voiceEnabled, setVoiceEnabled] = useState(false);
-  const [voiceStatus, setVoiceStatus] = useState(
-    "Microphone disabled. Enable it to start voice chat."
-  );
-  const [peerStates, setPeerStates] = useState({});
-  const [muted, setMuted] = useState(false);
-  const [speakerVolume, setSpeakerVolume] = useState(100);
-  const [audioOutputBlocked, setAudioOutputBlocked] = useState(false);
+    const localStreamRef = useRef(null);
+    const peerConnectionsRef = useRef(new Map());
+    const audioElementsRef = useRef(new Map());
+    const audioContextRef = useRef(null);
+    const audioNodesRef = useRef(new Map());
+    const positionRef = useRef(playerPosition);
 
-  const localStreamRef = useRef(null);
-  const peerConnectionsRef = useRef(new Map());
-  const audioElementsRef = useRef(new Map());
-  const enabledRef = useRef(false);
-  const mutedRef = useRef(false);
-  const volumeRef = useRef(1);
-  const audioContextRef = useRef(null);
-  const audioNodesRef = useRef(new Map());
+    useEffect(() => {
+        positionRef.current = playerPosition;
+    }, [playerPosition]);
 
-  const updatePeerState = useCallback((peerId, state) => {
-    setPeerStates((previous) => ({
-      ...previous,
-      [peerId]: state,
-    }));
-  }, []);
+    const distanceBetween = useCallback((a, b) => {
+        return Math.hypot(
+            Number(a.x) - Number(b.x),
+            Number(a.y) - Number(b.y)
+        );
+    }, []);
 
-  const closePeer = useCallback((peerId) => {
-    const connection = peerConnectionsRef.current.get(peerId);
+    const closePeer = useCallback((peerId) => {
+        const pc = peerConnectionsRef.current.get(peerId);
 
-    if (connection) {
-      connection.onicecandidate = null;
-      connection.ontrack = null;
-      connection.onconnectionstatechange = null;
-      connection.close();
-      peerConnectionsRef.current.delete(peerId);
-    }
+        if (pc) {
+            pc.onicecandidate = null;
+            pc.ontrack = null;
+            pc.onconnectionstatechange = null;
+            pc.close();
+            peerConnectionsRef.current.delete(peerId);
+        }
 
-    const audio = audioElementsRef.current.get(peerId);
+        const audio = audioElementsRef.current.get(peerId);
 
-    if (audio) {
-      audio.pause();
-      audio.srcObject = null;
-      audioElementsRef.current.delete(peerId);
-    }
+        if (audio) {
+            audio.pause();
+            audio.srcObject = null;
+            audio.remove();
+            audioElementsRef.current.delete(peerId);
+        }
 
-    const nodes = audioNodesRef.current.get(peerId);
+        const nodes = audioNodesRef.current.get(peerId);
 
-    if (nodes) {
-      try {
-        nodes.source.disconnect();
-        nodes.gain.disconnect();
-        nodes.panner.disconnect();
-      } catch {
-        // Nodes may already be disconnected.
-      }
+        if (nodes) {
+            try {
+                nodes.source.disconnect();
+                nodes.gain.disconnect();
+                nodes.panner.disconnect();
+            } catch {
+                // Nodes may already be disconnected.
+            }
 
-      audioNodesRef.current.delete(peerId);
-    }
+            audioNodesRef.current.delete(peerId);
+        }
 
-    setPeerStates((previous) => {
-      const next = { ...previous };
-      delete next[peerId];
-      return next;
-    });
-  }, []);
+        setConnectedPeers(previous =>
+            previous.filter(id => id !== peerId)
+        );
+    }, []);
 
-  const createPeerConnection = useCallback(
-    (peerId) => {
-      const existing = peerConnectionsRef.current.get(peerId);
+    const getMicrophone = useCallback(async () => {
+        if (localStreamRef.current) {
+            return localStreamRef.current;
+        }
 
-      if (existing) return existing;
+        if (!navigator.mediaDevices?.getUserMedia) {
+            throw new Error("Microphone access is not supported.");
+        }
 
-      const connection = new RTCPeerConnection(ICE_SERVERS);
-      peerConnectionsRef.current.set(peerId, connection);
-
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((track) => {
-          connection.addTrack(track, localStreamRef.current);
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            },
+            video: false
         });
-      }
 
-      connection.onicecandidate = (event) => {
-        if (event.candidate && socket?.connected) {
-          socket.emit("webrtc:ice-candidate", {
-            to: peerId,
-            candidate: event.candidate,
-          });
+        localStreamRef.current = stream;
+
+        return stream;
+    }, []);
+
+    const updateSpatialAudio = useCallback((peerId, remotePosition) => {
+        const localPosition = positionRef.current;
+
+        if (!localPosition || !remotePosition) return;
+
+        const distance = distanceBetween(
+            localPosition,
+            remotePosition
+        );
+
+        const nodes = audioNodesRef.current.get(peerId);
+
+        if (!nodes) return;
+
+        if (distance > PROXIMITY_DISTANCE) {
+            nodes.gain.gain.setTargetAtTime(
+                0,
+                audioContextRef.current.currentTime,
+                0.05
+            );
+            return;
         }
-      };
 
-      connection.ontrack = async (event) => {
-        let audio = audioElementsRef.current.get(peerId);
+        const volume = Math.max(
+            0,
+            1 - distance / PROXIMITY_DISTANCE
+        );
 
-        if (!audio) {
-          audio = new Audio();
-          audio.autoplay = true;
-          audio.playsInline = true;
-          audioElementsRef.current.set(peerId, audio);
+        const horizontalDistance =
+            Number(remotePosition.x) - Number(localPosition.x);
+
+        const pan = Math.max(
+            -1,
+            Math.min(1, horizontalDistance / PROXIMITY_DISTANCE)
+        );
+
+        nodes.gain.gain.setTargetAtTime(
+            volume,
+            audioContextRef.current.currentTime,
+            0.05
+        );
+
+        nodes.panner.pan.setTargetAtTime(
+            pan,
+            audioContextRef.current.currentTime,
+            0.05
+        );
+    }, [distanceBetween]);
+
+    const createPeerConnection = useCallback(async (peerId) => {
+        if (peerConnectionsRef.current.has(peerId)) {
+            return peerConnectionsRef.current.get(peerId);
         }
 
-        audio.srcObject = event.streams[0];
-        audio.volume = 1;
-        audio.muted = mutedRef.current;
+        const stream = await getMicrophone();
 
-        try {
-          const AudioContextClass =
-            window.AudioContext || window.webkitAudioContext;
+        const pc = new RTCPeerConnection(RTC_CONFIGURATION);
 
-          if (
-            AudioContextClass &&
-            !audioNodesRef.current.has(peerId)
-          ) {
-            const audioContext =
-              audioContextRef.current ||
-              (audioContextRef.current = new AudioContextClass());
+        stream.getTracks().forEach(track => {
+            pc.addTrack(track, stream);
+        });
 
-            const source = audioContext.createMediaElementSource(audio);
+        pc.onicecandidate = event => {
+            if (event.candidate) {
+                socket.emit("webrtc:ice-candidate", {
+                    to: peerId,
+                    candidate: event.candidate
+                });
+            }
+        };
 
-            const gain = audioContext.createGain();
-            gain.gain.value = 0;
+        pc.ontrack = async event => {
+            let audio = audioElementsRef.current.get(peerId);
 
-            // Week 4: Stereo audio panning.
-            const panner = audioContext.createStereoPanner();
-            panner.pan.value = 0;
+            if (!audio) {
+                audio = document.createElement("audio");
+                audio.autoplay = true;
+                audio.playsInline = true;
+                audio.dataset.peerId = peerId;
 
-            // Audio flow: Source -> Gain -> Panner -> Speakers.
-            source.connect(gain);
-            gain.connect(panner);
-            panner.connect(audioContext.destination);
+                document.body.appendChild(audio);
 
-            audioNodesRef.current.set(peerId, {
-              source,
-              gain,
-              panner,
+                audioElementsRef.current.set(peerId, audio);
+            }
+
+            audio.srcObject = event.streams[0];
+
+            try {
+                if (!audioContextRef.current) {
+                    audioContextRef.current =
+                        new AudioContext();
+                }
+
+                const context = audioContextRef.current;
+
+                if (!audioNodesRef.current.has(peerId)) {
+                    const source =
+                        context.createMediaStreamSource(
+                            event.streams[0]
+                        );
+
+                    const gain = context.createGain();
+                    const panner = context.createStereoPanner();
+
+                    source.connect(gain);
+                    gain.connect(panner);
+                    panner.connect(context.destination);
+
+                    audioNodesRef.current.set(peerId, {
+                        source,
+                        gain,
+                        panner
+                    });
+                }
+
+                if (context.state === "suspended") {
+                    await context.resume();
+                }
+
+                const remotePosition = await getPlayerPosition(peerId);
+
+                if (remotePosition) {
+                    updateSpatialAudio(peerId, remotePosition);
+                }
+
+            } catch (error) {
+                console.error("Spatial audio error:", error);
+            }
+
+            audio.play().catch(() => {
+                setVoiceError(
+                    "Click the page to allow audio playback."
+                );
             });
-          }
+        };
 
-          if (audioContextRef.current?.state === "suspended") {
-            await audioContextRef.current.resume();
-          }
+        pc.onconnectionstatechange = () => {
+            if (
+                pc.connectionState === "connected"
+            ) {
+                setConnectedPeers(previous =>
+                    previous.includes(peerId)
+                        ? previous
+                        : [...previous, peerId]
+                );
+            }
 
-          await audio.play();
-          setAudioOutputBlocked(false);
-        } catch {
-          setAudioOutputBlocked(true);
-        }
+            if (
+                pc.connectionState === "failed" ||
+                pc.connectionState === "closed" ||
+                pc.connectionState === "disconnected"
+            ) {
+                closePeer(peerId);
+            }
+        };
 
-        updatePeerState(peerId, "Voice connected");
-      };
+        peerConnectionsRef.current.set(peerId, pc);
 
-      connection.onconnectionstatechange = () => {
-        const state = connection.connectionState;
+        return pc;
+    }, [socket, getMicrophone, closePeer, updateSpatialAudio]);
 
-        updatePeerState(peerId, state);
-
-        if (state === "failed" || state === "closed") {
-          closePeer(peerId);
-        }
-      };
-
-      return connection;
-    },
-    [socket, updatePeerState, closePeer]
-  );
-
-  const enableVoice = useCallback(async () => {
-    if (enabledRef.current) return;
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setVoiceStatus(
-        "Microphone access is unavailable. Use HTTPS or localhost."
-      );
-      return;
-    }
-
-    try {
-      setVoiceStatus("Requesting microphone permission...");
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-        video: false,
-      });
-
-      localStreamRef.current = stream;
-
-      if (audioContextRef.current?.state === "suspended") {
-        await audioContextRef.current.resume();
-      }
-
-      enabledRef.current = true;
-      setVoiceEnabled(true);
-      setVoiceStatus("Microphone enabled. Waiting for nearby players.");
-
-      if (socket?.connected) {
-        socket.emit("voice:join");
-      }
-    } catch (error) {
-      setVoiceStatus(
-        error?.name === "NotAllowedError"
-          ? "Microphone permission denied. Allow microphone access in your browser."
-          : "Could not start microphone. Check your device and browser permissions."
-      );
-    }
-  }, [socket]);
-
-  const disableVoice = useCallback(() => {
-    enabledRef.current = false;
-
-    peerConnectionsRef.current.forEach((connection) => {
-      connection.close();
-    });
-
-    peerConnectionsRef.current.clear();
-
-    audioElementsRef.current.forEach((audio) => {
-      audio.pause();
-      audio.srcObject = null;
-    });
-
-    audioElementsRef.current.clear();
-
-    audioNodesRef.current.forEach(({ source, gain, panner }) => {
-      try {
-        source.disconnect();
-        gain.disconnect();
-        panner.disconnect();
-      } catch {
-        // Nodes may already be disconnected.
-      }
-    });
-
-    audioNodesRef.current.clear();
-
-    localStreamRef.current?.getTracks().forEach((track) => {
-      track.stop();
-    });
-
-    localStreamRef.current = null;
-
-    if (socket?.connected) {
-      socket.emit("voice:leave");
-    }
-
-    setVoiceEnabled(false);
-    setPeerStates({});
-    setAudioOutputBlocked(false);
-    setVoiceStatus("Microphone disabled.");
-  }, [socket]);
-
-  const toggleMute = useCallback(() => {
-    const nextMuted = !mutedRef.current;
-
-    mutedRef.current = nextMuted;
-    setMuted(nextMuted);
-
-    localStreamRef.current?.getAudioTracks().forEach((track) => {
-      track.enabled = !nextMuted;
-    });
-
-    audioElementsRef.current.forEach((audio) => {
-      audio.muted = nextMuted;
-    });
-  }, []);
-
-  const changeSpeakerVolume = useCallback((value) => {
-    const numericValue = Math.max(
-      0,
-      Math.min(100, Number(value) || 0)
-    );
-
-    volumeRef.current = numericValue / 100;
-    setSpeakerVolume(numericValue);
-  }, []);
-
-  const resumeAudio = useCallback(async () => {
-    try {
-      if (audioContextRef.current?.state === "suspended") {
-        await audioContextRef.current.resume();
-      }
-
-      for (const audio of audioElementsRef.current.values()) {
-        await audio.play();
-      }
-
-      setAudioOutputBlocked(false);
-    } catch {
-      setAudioOutputBlocked(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!socket) return undefined;
-
-    const handleOffer = async ({ from, offer }) => {
-      if (!enabledRef.current || !from || !offer) return;
-
-      try {
-        const connection = createPeerConnection(from);
-
-        await connection.setRemoteDescription(
-          new RTCSessionDescription(offer)
-        );
-
-        const answer = await connection.createAnswer();
-        await connection.setLocalDescription(answer);
-
-        socket.emit("webrtc:answer", {
-          to: from,
-          answer,
+    async function getPlayerPosition(peerId) {
+        return new Promise(resolve => {
+            socket.emit("player:get-position", {
+                socketId: peerId
+            }, resolve);
         });
+    }
 
-        updatePeerState(from, "Answer sent");
-      } catch {
-        updatePeerState(from, "Offer handling failed");
-      }
-    };
-
-    const handleAnswer = async ({ from, answer }) => {
-      const connection = peerConnectionsRef.current.get(from);
-
-      if (!connection || !answer) return;
-
-      try {
-        await connection.setRemoteDescription(
-          new RTCSessionDescription(answer)
-        );
-
-        updatePeerState(from, "Answer received");
-      } catch {
-        updatePeerState(from, "Answer handling failed");
-      }
-    };
-
-    const handleCandidate = async ({ from, candidate }) => {
-      const connection = peerConnectionsRef.current.get(from);
-
-      if (!connection || !candidate) return;
-
-      try {
-        await connection.addIceCandidate(
-          new RTCIceCandidate(candidate)
-        );
-      } catch {
-        updatePeerState(from, "ICE candidate failed");
-      }
-    };
-
-    const handleVoicePeer = async ({ peerId }) => {
-      if (
-        !enabledRef.current ||
-        !peerId ||
-        peerId === socket.id ||
-        peerConnectionsRef.current.has(peerId)
-      ) {
-        return;
-      }
-
-      try {
-        const connection = createPeerConnection(peerId);
-        const offer = await connection.createOffer();
-
-        await connection.setLocalDescription(offer);
-
-        socket.emit("webrtc:offer", {
-          to: peerId,
-          offer,
-        });
-
-        updatePeerState(peerId, "Offer sent");
-      } catch {
-        updatePeerState(peerId, "Could not create offer");
-      }
-    };
-
-    const handlePeerLeft = ({ peerId }) => {
-      if (peerId) closePeer(peerId);
-    };
-
-    socket.on("webrtc:offer", handleOffer);
-    socket.on("webrtc:answer", handleAnswer);
-    socket.on("webrtc:ice-candidate", handleCandidate);
-    socket.on("voice:peer", handleVoicePeer);
-    socket.on("voice:peer-left", handlePeerLeft);
-
-    return () => {
-      socket.off("webrtc:offer", handleOffer);
-      socket.off("webrtc:answer", handleAnswer);
-      socket.off("webrtc:ice-candidate", handleCandidate);
-      socket.off("voice:peer", handleVoicePeer);
-      socket.off("voice:peer-left", handlePeerLeft);
-    };
-  }, [socket, createPeerConnection, updatePeerState, closePeer]);
-
-  // Week 3: Distance-based volume.
-  // Week 4: Left/right stereo audio panning.
-  useEffect(() => {
-    if (!voiceEnabled) return undefined;
-
-    const updateSpatialAudio = () => {
-      const players = playersRef?.current;
-
-      if (!players || typeof players.get !== "function") return;
-
-      const localPlayer = players.get(socket?.id);
-
-      if (!localPlayer) return;
-
-      audioNodesRef.current.forEach(({ gain, panner }, peerId) => {
-        const remotePlayer = players.get(peerId);
-
-        if (
-          !remotePlayer ||
-          typeof localPlayer.x !== "number" ||
-          typeof localPlayer.y !== "number" ||
-          typeof remotePlayer.x !== "number" ||
-          typeof remotePlayer.y !== "number"
-        ) {
-          const now = audioContextRef.current?.currentTime || 0;
-
-          gain.gain.setTargetAtTime(0, now, 0.04);
-          panner.pan.setTargetAtTime(0, now, 0.04);
-          return;
-        }
-
-        const dx = remotePlayer.x - localPlayer.x;
-        const dy = remotePlayer.y - localPlayer.y;
-
-        const distance = Math.sqrt(dx * dx + dy * dy);
-
-        // Distance-based volume attenuation.
-        const distanceGain = Math.max(
-          0,
-          Math.min(1, 1 - distance / AUDIO_RANGE)
-        );
-
-        const targetGain = mutedRef.current
-          ? 0
-          : volumeRef.current * distanceGain;
-
-        // Horizontal position controls left/right stereo direction.
-        const targetPan = Math.max(
-          -1,
-          Math.min(1, dx / AUDIO_RANGE)
-        );
-
-        if (audioContextRef.current) {
-          const now = audioContextRef.current.currentTime;
-
-          gain.gain.setTargetAtTime(targetGain, now, 0.04);
-
-          panner.pan.setTargetAtTime(
-            targetPan,
-            now,
-            0.04
-          );
-        }
-      });
-    };
-
-    updateSpatialAudio();
-
-    const intervalId = window.setInterval(
-      updateSpatialAudio,
-      100
-    );
-
-    return () => window.clearInterval(intervalId);
-  }, [voiceEnabled, socket, playersRef]);
-
-  useEffect(() => {
-    if (!voiceEnabled || !socket?.connected) return;
-
-    nearbyPlayers.forEach((player) => {
-      if (
-        player?.id &&
-        player.id !== socket.id &&
-        !peerConnectionsRef.current.has(player.id)
-      ) {
-        socket.emit("voice:request-peer", {
-          peerId: player.id,
-        });
-      }
-    });
-  }, [nearbyPlayers, voiceEnabled, socket]);
-
-  useEffect(() => {
-    return () => {
-      enabledRef.current = false;
-
-      localStreamRef.current?.getTracks().forEach((track) => {
-        track.stop();
-      });
-
-      peerConnectionsRef.current.forEach((connection) => {
-        connection.close();
-      });
-
-      audioElementsRef.current.forEach((audio) => {
-        audio.pause();
-        audio.srcObject = null;
-      });
-
-      peerConnectionsRef.current.clear();
-      audioElementsRef.current.clear();
-
-      audioNodesRef.current.forEach(({ source, gain, panner }) => {
+    const callPeer = useCallback(async (peerId) => {
         try {
-          source.disconnect();
-          gain.disconnect();
-          panner.disconnect();
-        } catch {
-          // Nodes may already be disconnected.
+            const pc = await createPeerConnection(peerId);
+
+            if (pc.signalingState !== "stable") return;
+
+            const offer = await pc.createOffer();
+
+            await pc.setLocalDescription(offer);
+
+            socket.emit("webrtc:offer", {
+                to: peerId,
+                offer
+            });
+        } catch (error) {
+            console.error("Peer call error:", error);
+            setVoiceError(error.message);
         }
-      });
+    }, [socket, createPeerConnection]);
 
-      audioNodesRef.current.clear();
+    const enableMicrophone = useCallback(async () => {
+        try {
+            await getMicrophone();
 
-      if (
-        audioContextRef.current &&
-        audioContextRef.current.state !== "closed"
-      ) {
-        audioContextRef.current.close();
-      }
+            if (audioContextRef.current?.state === "suspended") {
+                await audioContextRef.current.resume();
+            }
 
-      audioContextRef.current = null;
+            setIsMicEnabled(true);
+            setVoiceError("");
+
+            socket.emit("voice:join");
+        } catch (error) {
+            setVoiceError(
+                error.message || "Unable to access microphone."
+            );
+        }
+    }, [socket, getMicrophone]);
+
+    const disableMicrophone = useCallback(() => {
+        if (localStreamRef.current) {
+            localStreamRef.current.getTracks().forEach(track => {
+                track.stop();
+            });
+
+            localStreamRef.current = null;
+        }
+
+        peerConnectionsRef.current.forEach((pc, peerId) => {
+            closePeer(peerId);
+        });
+
+        socket.emit("voice:leave");
+
+        setIsMicEnabled(false);
+    }, [socket, closePeer]);
+
+    useEffect(() => {
+        if (!socket) return;
+
+        const handlePeerRequest = async ({ from }) => {
+            if (!isMicEnabled || !from) return;
+
+            try {
+                const pc = await createPeerConnection(from);
+
+                if (pc.signalingState !== "stable") return;
+
+                const offer = await pc.createOffer();
+
+                await pc.setLocalDescription(offer);
+
+                socket.emit("webrtc:offer", {
+                    to: from,
+                    offer
+                });
+            } catch (error) {
+                console.error(error);
+            }
+        };
+
+        const handleOffer = async ({ from, offer }) => {
+            try {
+                if (!isMicEnabled || !from) return;
+
+                const pc = await createPeerConnection(from);
+
+                if (pc.signalingState !== "stable") return;
+
+                await pc.setRemoteDescription(offer);
+
+                const answer = await pc.createAnswer();
+
+                await pc.setLocalDescription(answer);
+
+                socket.emit("webrtc:answer", {
+                    to: from,
+                    answer
+                });
+            } catch (error) {
+                console.error("Offer handling error:", error);
+            }
+        };
+
+        const handleAnswer = async ({ from, answer }) => {
+            try {
+                const pc = peerConnectionsRef.current.get(from);
+
+                if (pc && pc.signalingState === "have-local-offer") {
+                    await pc.setRemoteDescription(answer);
+                }
+            } catch (error) {
+                console.error("Answer handling error:", error);
+            }
+        };
+
+        const handleIceCandidate = async ({ from, candidate }) => {
+            try {
+                const pc = peerConnectionsRef.current.get(from);
+
+                if (pc && candidate) {
+                    await pc.addIceCandidate(candidate);
+                }
+            } catch (error) {
+                console.error("ICE candidate error:", error);
+            }
+        };
+
+        const handlePeerLeft = ({ socketId }) => {
+            closePeer(socketId);
+        };
+
+        const handleNearby = async players => {
+            if (!isMicEnabled || !Array.isArray(players)) return;
+
+            for (const player of players) {
+                if (
+                    !player.socketId ||
+                    peerConnectionsRef.current.has(player.socketId)
+                ) {
+                    continue;
+                }
+
+                const distance = distanceBetween(
+                    positionRef.current,
+                    player
+                );
+
+                if (distance <= PROXIMITY_DISTANCE) {
+                    socket.emit("voice:request-peer", {
+                        to: player.socketId
+                    });
+                }
+            }
+        };
+
+        socket.on("voice:peer-request", handlePeerRequest);
+        socket.on("webrtc:offer", handleOffer);
+        socket.on("webrtc:answer", handleAnswer);
+        socket.on("webrtc:ice-candidate", handleIceCandidate);
+        socket.on("voice:peer-left", handlePeerLeft);
+        socket.on("voice:nearby", handleNearby);
+
+        return () => {
+            socket.off("voice:peer-request", handlePeerRequest);
+            socket.off("webrtc:offer", handleOffer);
+            socket.off("webrtc:answer", handleAnswer);
+            socket.off("webrtc:ice-candidate", handleIceCandidate);
+            socket.off("voice:peer-left", handlePeerLeft);
+            socket.off("voice:nearby", handleNearby);
+        };
+    }, [
+        socket,
+        isMicEnabled,
+        createPeerConnection,
+        closePeer,
+        distanceBetween
+    ]);
+
+    useEffect(() => {
+        const timer = setInterval(() => {
+            peerConnectionsRef.current.forEach((pc, peerId) => {
+                const audio = audioElementsRef.current.get(peerId);
+
+                if (!audio) return;
+
+                // The backend must supply current player positions
+                // through the world/movement events.
+                const remote = window.__proxyspeakPlayers?.[peerId];
+
+                if (remote) {
+                    updateSpatialAudio(peerId, remote);
+                }
+            });
+        }, 100);
+
+        return () => clearInterval(timer);
+    }, [updateSpatialAudio]);
+
+    useEffect(() => {
+        return () => {
+            peerConnectionsRef.current.forEach(pc => pc.close());
+            peerConnectionsRef.current.clear();
+
+            audioElementsRef.current.forEach(audio => {
+                audio.pause();
+                audio.srcObject = null;
+                audio.remove();
+            });
+
+            audioElementsRef.current.clear();
+
+            localStreamRef.current?.getTracks().forEach(track => {
+                track.stop();
+            });
+
+            audioContextRef.current?.close();
+        };
+    }, []);
+
+    return {
+        isMicEnabled,
+        connectedPeers,
+        voiceError,
+        enableMicrophone,
+        disableMicrophone
     };
-  }, []);
-
-  return {
-    voiceEnabled,
-    voiceStatus,
-    peerStates,
-    muted,
-    speakerVolume,
-    audioOutputBlocked,
-    enableVoice,
-    disableVoice,
-    toggleMute,
-    changeSpeakerVolume,
-    resumeAudio,
-  };
 }
