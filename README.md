@@ -345,3 +345,17 @@ Janakirani Venkatesan	WebRTC & Spatial Audio	Peer connections, Web Audio mixer, 
 - Project: ProxiSpeak — Geospatial Proximity Audio Ecosystem
 - Group: 33
 - Assignment Code: ITS/WEB/1322
+## 14. Render Backend Deployment
+
+1. Connect the ProxiSpeak GitHub repository to Render.
+2. Select the team-approved deployment branch.
+3. Choose Node as the runtime.
+4. Set Root Directory to `server`.
+5. Set Build Command to `npm ci`.
+6. Set Start Command to `npm start`.
+7. Add `MONGODB_URI` with the MongoDB Atlas connection string.
+8. Set `CORS_ORIGIN` to the deployed frontend URL.
+9. Deploy the web service and verify the server logs.
+
+Keep database credentials private. Configure the frontend `VITE_SERVER_URL` with the deployed backend URL.
+
